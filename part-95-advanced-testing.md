@@ -1,1424 +1,1098 @@
-# Part 95: Advanced Testing in Production-Like Environments
+# Part 95: Advanced Testing Strategies for Spring Boot
 ## ขั้นตอนที่ 3401-3440
 
 **ระดับ:** World-Class (ระดับโลก)
-**เวลาเรียน:** 6-8 ชั่วโมง
-**เป้าหมาย:** เรียนรู้ advanced testing techniques ที่ใช้ในระบบ production จริง ครอบคลุม Chaos testing, Load testing automation, Contract testing, Visual regression testing สำหรับ APIs, Synthetic monitoring และ Testing with production data snapshots
+**เวลาเรียน:** 8-10 ชั่วโมง
+**เป้าหมาย:** เรียนรู้ testing strategies ขั้นสูงสำหรับ production systems ครอบคลุม Chaos testing, Load testing CI gates, Contract testing automation, Synthetic monitoring, Production data snapshots, Shift-left security testing และ Testcontainers compose
 
 ---
 
-## ขั้นตอนที่ 3401: ภาพรวม Advanced Testing Pyramid
+## ขั้นตอนที่ 3401: Chaos Testing กับ Chaos Monkey for Spring Boot
 
-```
-        /\
-       /  \
-      / E2E \          ← น้อยที่สุด แต่ครอบคลุมมากที่สุด
-     /--------\
-    / Contract  \      ← ตรวจสอบ API contracts ระหว่าง services
-   /------------\
-  / Integration   \    ← ทดสอบ components ร่วมกัน
- /----------------\
-/    Unit Tests    \   ← มากที่สุด, เร็วที่สุด
-\__________________/
+Chaos Engineering คือการทดสอบความแข็งแกร่งของระบบโดยจงใจใส่ความผิดพลาดเข้าไป เพื่อค้นหาจุดอ่อนก่อนที่จะเกิดขึ้นจริงใน production
 
-Advanced Layers:
-- Chaos Testing (ทดสอบ resilience)
-- Load Testing (ทดสอบ performance)
-- Synthetic Monitoring (ทดสอบ production)
-- Contract Testing (ทดสอบ API compatibility)
-```
-
-## ขั้นตอนที่ 3402: Chaos Testing ด้วย Chaos Monkey
-
-Chaos Engineering คือการ inject failures โดยตั้งใจ เพื่อค้นหาจุดอ่อนก่อนที่ production จะพัง
-
-### ติดตั้ง Chaos Monkey สำหรับ Spring Boot
+### Dependencies
 
 ```xml
 <!-- pom.xml -->
 <dependency>
     <groupId>de.codecentric</groupId>
     <artifactId>chaos-monkey-spring-boot</artifactId>
-    <version>3.0.1</version>
+    <version>3.1.0</version>
 </dependency>
 ```
 
+### Configuration
+
 ```yaml
-# application.yml
+# application-chaos.yml
 chaos:
   monkey:
     enabled: true
     assaults:
-      level: 5                    # ความรุนแรง (1-10)
-      latency-active: true
-      latency-range-start: 1000  # ms
-      latency-range-end: 5000    # ms
-      exceptions-active: true
-      exception:
-        type: java.lang.RuntimeException
-        arguments:
-          - type: java.lang.String
-            value: "Chaos Monkey Exception!"
-      kill-application-active: false  # อย่าเปิดใน production!
-      memory-active: false
+      level: 3                  # 1-10, likelihood ของ assault
+      latency-active: true      # เพิ่ม latency แบบสุ่ม
+      latency-range-start: 1000 # 1 วินาที
+      latency-range-end: 5000   # 5 วินาที
+      exceptions-active: false  # ยังไม่เปิด exceptions
+      kill-application-active: false
     watcher:
-      controller: true
-      restController: true
-      service: true
-      repository: true
-      component: true
+      service: true             # Assault ที่ @Service beans
+      rest-controller: false
+      repository: true          # Assault ที่ @Repository beans
+      component: false
 ```
+
+### Chaos Testing Scenarios
 
 ```java
-// ChaosMonkeyConfig.java - Custom chaos settings
-@Configuration
-@Profile("chaos")
-public class ChaosMonkeyConfig {
-
-    @Bean
-    public ChaosMonkeyRequestScope chaosMonkeyRequestScope(
-            AssaultProperties assaultProperties,
-            ChaosMonkeySettings settings) {
-        return new ChaosMonkeyRequestScope(settings, assaultProperties);
-    }
-}
-```
-
-### Kubernetes Chaos Engineering ด้วย Chaos Mesh
-
-```yaml
-# chaos/pod-failure-experiment.yaml
-apiVersion: chaos-mesh.org/v1alpha1
-kind: PodChaos
-metadata:
-  name: user-service-pod-failure
-  namespace: shophub-staging
-spec:
-  action: pod-failure
-  mode: one            # จำนวน pods ที่จะถูก chaos
-  value: "1"
-  duration: "30s"
-  selector:
-    namespaces:
-      - shophub-staging
-    labelSelectors:
-      app: user-service
-  scheduler:
-    cron: "@every 10m"  # chaos ทุก 10 นาที
-```
-
-```yaml
-# chaos/network-partition-experiment.yaml
-apiVersion: chaos-mesh.org/v1alpha1
-kind: NetworkChaos
-metadata:
-  name: order-to-inventory-delay
-  namespace: shophub-staging
-spec:
-  action: delay
-  mode: all
-  selector:
-    namespaces:
-      - shophub-staging
-    labelSelectors:
-      app: order-service
-  delay:
-    latency: "2s"
-    jitter: "500ms"
-    correlation: "50"
-  direction: to
-  target:
-    selector:
-      namespaces:
-        - shophub-staging
-      labelSelectors:
-        app: inventory-service
-  duration: "5m"
-```
-
-```yaml
-# chaos/memory-stress-experiment.yaml
-apiVersion: chaos-mesh.org/v1alpha1
-kind: StressChaos
-metadata:
-  name: product-service-memory-stress
-  namespace: shophub-staging
-spec:
-  mode: one
-  selector:
-    namespaces:
-      - shophub-staging
-    labelSelectors:
-      app: product-service
-  stressors:
-    memory:
-      workers: 4
-      size: "256MB"
-  duration: "2m"
-```
-
-### Chaos Test ที่ Automated
-
-```java
-// ChaosTestSuite.java - Automated chaos experiments
+// chaos/ChaosTestScenario.java
 @SpringBootTest
-@ActiveProfiles("chaos-test")
-@Slf4j
-class ChaosResilienceTest {
-
-    @Autowired
-    private RecommendationService recommendationService;
-
-    @Autowired
-    private ChaosMonkeySettings chaosSettings;
-
-    @Autowired
-    private AssaultProperties assaultProperties;
-
-    @Test
-    @DisplayName("Service should handle latency injection gracefully")
-    void shouldHandleLatencyGracefully() throws Exception {
-        // Enable latency assault
-        assaultProperties.setLatencyActive(true);
-        assaultProperties.setLatencyRangeStart(2000);
-        assaultProperties.setLatencyRangeEnd(3000);
-        assaultProperties.setLevel(5);
-
-        // Service ต้องตอบสนองภายใน timeout
-        assertTimeout(Duration.ofSeconds(10), () -> {
-            List<ProductDto> recommendations = 
-                    recommendationService.getPersonalizedRecommendations(1L, 10);
-            // ควรได้ fallback recommendations
-            assertThat(recommendations).isNotEmpty();
-        });
-
-        // Disable after test
-        assaultProperties.setLatencyActive(false);
-    }
-
-    @Test
-    @DisplayName("Service should use fallback when exceptions are injected")
-    void shouldUseFallbackOnException() {
-        // Enable exception assault
-        assaultProperties.setExceptionsActive(true);
-        assaultProperties.setLevel(8);
-
-        // Service ไม่ควร throw exception
-        assertDoesNotThrow(() -> {
-            List<ProductDto> products = 
-                    recommendationService.getPersonalizedRecommendations(1L, 10);
-            assertThat(products).isNotNull();
-        });
-
-        assaultProperties.setExceptionsActive(false);
-    }
-}
-```
-
-## ขั้นตอนที่ 3403: Load Testing Automation ใน CI/CD
-
-Load testing อัตโนมัติช่วยตรวจจับ performance regression ก่อน deploy
-
-### Gatling Load Test
-
-```scala
-// src/gatling/scala/simulations/OrderServiceSimulation.scala
-package simulations
-
-import io.gatling.core.Predef._
-import io.gatling.http.Predef._
-import scala.concurrent.duration._
-
-class OrderServiceSimulation extends Simulation {
-
-  val httpProtocol = http
-    .baseUrl(System.getProperty("baseUrl", "http://localhost:8080"))
-    .acceptHeader("application/json")
-    .contentTypeHeader("application/json")
-    .header("Authorization", s"Bearer ${System.getProperty("authToken", "test-token")}")
-
-  // สร้าง orders scenario
-  val createOrderScenario = scenario("Create Order")
-    .exec(
-      http("Create Order")
-        .post("/api/orders")
-        .body(StringBody("""
-          {
-            "items": [
-              {"productId": 1, "quantity": 2},
-              {"productId": 2, "quantity": 1}
-            ],
-            "shippingAddress": "123 Test St, Bangkok"
-          }
-        """))
-        .check(status.is(201))
-        .check(jsonPath("$.data.orderNumber").saveAs("orderNumber"))
-    )
-    .pause(1)
-    .exec(
-      http("Get Order Status")
-        .get("/api/orders/${orderNumber}")
-        .check(status.is(200))
-        .check(jsonPath("$.data.status").is("PENDING"))
-    )
-
-  // Product browsing scenario
-  val browseProductsScenario = scenario("Browse Products")
-    .exec(
-      http("List Products")
-        .get("/api/products?page=0&size=20")
-        .check(status.is(200))
-        .check(jsonPath("$.data.content").exists)
-    )
-    .pause(2)
-    .exec(
-      http("Get Product Detail")
-        .get("/api/products/1")
-        .check(status.is(200))
-    )
-    .pause(1)
-    .exec(
-      http("Get Recommendations")
-        .get("/api/recommendations/1?limit=10")
-        .check(status.is(200))
-    )
-
-  // Performance SLA thresholds
-  val successThreshold = 0.99  // 99% success rate
-  val p95Threshold = 1000       // 95th percentile < 1000ms
-  val p99Threshold = 2000       // 99th percentile < 2000ms
-
-  setUp(
-    // Normal load
-    browseProductsScenario.inject(
-      rampUsersPerSec(1).to(50).during(2.minutes),
-      constantUsersPerSec(50).during(5.minutes)
-    ).protocols(httpProtocol),
+@ActiveProfiles("chaos")
+@TestPropertySource(properties = {
+    "chaos.monkey.enabled=true",
+    "chaos.monkey.assaults.level=5",
+    "chaos.monkey.assaults.latency-active=true"
+})
+class ChaosLatencyTest {
     
-    // Transaction load
-    createOrderScenario.inject(
-      rampUsersPerSec(1).to(10).during(2.minutes),
-      constantUsersPerSec(10).during(5.minutes)
-    ).protocols(httpProtocol)
-  )
-  .assertions(
-    global.responseTime.percentile3.lt(p99Threshold),   // P99 < 2000ms
-    global.responseTime.percentile2.lt(p95Threshold),   // P95 < 1000ms
-    global.successfulRequests.percent.gt(successThreshold * 100),
-    details("Create Order").responseTime.mean.lt(500),
-    details("Get Recommendations").responseTime.mean.lt(200)
-  )
-}
-```
-
-### Stress Test
-
-```scala
-// StressTestSimulation.scala
-class StressTestSimulation extends Simulation {
-
-  val httpProtocol = http
-    .baseUrl(System.getProperty("baseUrl", "http://localhost:8080"))
-
-  val stressScenario = scenario("Stress Test")
-    .exec(
-      http("Health Check under stress")
-        .get("/actuator/health")
-        .check(status.is(200))
-        .check(jsonPath("$.status").is("UP"))
-    )
-
-  setUp(
-    stressScenario.inject(
-      rampUsersPerSec(10).to(500).during(5.minutes),   // ramp up
-      constantUsersPerSec(500).during(10.minutes),       // hold
-      rampUsersPerSec(500).to(0).during(2.minutes)       // ramp down
-    ).protocols(httpProtocol)
-  )
-  .assertions(
-    // สูงสุด 1% error rate ภายใต้ stress
-    global.failedRequests.percent.lt(1),
-    global.responseTime.percentile3.lt(5000)
-  )
-}
-```
-
-### Integration กับ CI/CD
-
-```yaml
-# .github/workflows/performance-test.yml
-name: Performance Test
-
-on:
-  push:
-    branches: [main, develop]
-  schedule:
-    - cron: '0 6 * * 1'  # ทุกวันจันทร์ 6am
-
-jobs:
-  load-test:
-    name: Load Test
-    runs-on: ubuntu-latest
-    services:
-      app:
-        image: myregistry.azurecr.io/shophub/user-service:latest
-        ports:
-          - 8081:8080
-        env:
-          SPRING_PROFILES_ACTIVE: test
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Wait for app to be ready
-        run: |
-          for i in {1..30}; do
-            if curl -f http://localhost:8081/actuator/health; then
-              break
-            fi
-            sleep 2
-          done
-
-      - name: Run Gatling tests
-        run: |
-          mvn gatling:test \
-            -Dgatling.simulationClass=simulations.OrderServiceSimulation \
-            -DbaseUrl=http://localhost:8081 \
-            -DauthToken=${{ secrets.TEST_AUTH_TOKEN }}
-
-      - name: Upload Gatling Report
-        uses: actions/upload-artifact@v3
-        if: always()
-        with:
-          name: gatling-report
-          path: target/gatling/
-
-      - name: Check performance thresholds
-        run: |
-          # Parse Gatling result and fail if SLA not met
-          RESULT=$(cat target/gatling/*/js/stats.json | jq '.stats.percentiles3.value')
-          echo "P99 latency: ${RESULT}ms"
-          if [ "$RESULT" -gt 2000 ]; then
-            echo "FAIL: P99 latency $RESULT ms exceeds threshold 2000ms"
-            exit 1
-          fi
-
-      - name: Comment PR with results
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const fs = require('fs');
-            // Parse and post results as PR comment
-```
-
-## ขั้นตอนที่ 3404: Contract Testing ด้วย Pact
-
-Contract testing ตรวจสอบว่า API ระหว่าง services ยังทำงาน compatible กันอยู่
-
-### Consumer Contract (Order Service → Inventory Service)
-
-```java
-// order-service/src/test/java/com/shophub/order/contract/InventoryClientContractTest.java
-@ExtendWith(PactConsumerTestExt.class)
-@PactTestFor(providerName = "inventory-service", port = "8084")
-class InventoryClientContractTest {
-
-    @Pact(consumer = "order-service")
-    public RequestResponsePact checkAndReserveStockPact(PactDslWithProvider builder) {
-        return builder
-                .given("sufficient stock available for SKU-001 and SKU-002")
-                .uponReceiving("a request to check and reserve stock")
-                .path("/api/inventory/check-and-reserve")
-                .method("POST")
-                .headers(Map.of("Content-Type", "application/json"))
-                .body(new PactDslJsonBody()
-                        .array("items")
-                            .object()
-                                .stringValue("sku", "SKU-001")
-                                .numberValue("quantity", 2)
-                                .integerMatching("productId", 1)
-                            .closeObject()
-                            .object()
-                                .stringValue("sku", "SKU-002")
-                                .numberValue("quantity", 1)
-                                .integerMatching("productId", 2)
-                            .closeObject()
-                        .closeArray()
-                )
-                .willRespondWith()
-                .status(200)
-                .headers(Map.of("Content-Type", "application/json"))
-                .body(new PactDslJsonBody()
-                        .booleanValue("success", true)
-                        .object("data")
-                            .booleanValue("available", true)
-                            .stringMatcher("message", ".*", "Stock reserved successfully")
-                        .closeObject()
-                )
-                .toPact();
-    }
-
-    @Test
-    @PactTestFor(pactMethod = "checkAndReserveStockPact")
-    void shouldSuccessfullyCheckAndReserveStock(MockServer mockServer) {
-        // ใช้ Feign client กับ mock server
-        InventoryClient client = Feign.builder()
-                .decoder(new JacksonDecoder())
-                .encoder(new JacksonEncoder())
-                .target(InventoryClient.class, mockServer.getUrl());
-
-        StockCheckRequest request = new StockCheckRequest();
-        request.setItems(List.of(
-                new StockCheckRequest.Item(1L, "SKU-001", 2),
-                new StockCheckRequest.Item(2L, "SKU-002", 1)
-        ));
-
-        ApiResponse<StockCheckResponse> response = client.checkAndReserveStock(request);
-
-        assertThat(response.isSuccess()).isTrue();
-        assertThat(response.getData().isAvailable()).isTrue();
-    }
-
-    @Pact(consumer = "order-service")
-    public RequestResponsePact insufficientStockPact(PactDslWithProvider builder) {
-        return builder
-                .given("insufficient stock for SKU-001")
-                .uponReceiving("a request when stock is insufficient")
-                .path("/api/inventory/check-and-reserve")
-                .method("POST")
-                .body(new PactDslJsonBody()
-                        .array("items")
-                            .object()
-                                .stringValue("sku", "SKU-001")
-                                .numberValue("quantity", 100)
-                                .integerMatching("productId", 1)
-                            .closeObject()
-                        .closeArray()
-                )
-                .willRespondWith()
-                .status(200)
-                .body(new PactDslJsonBody()
-                        .booleanValue("success", true)
-                        .object("data")
-                            .booleanValue("available", false)
-                            .stringMatcher("message", ".*Insufficient.*", "Insufficient stock for SKU-001")
-                        .closeObject()
-                )
-                .toPact();
-    }
-}
-```
-
-### Provider Verification (Inventory Service)
-
-```java
-// inventory-service/src/test/java/com/shophub/inventory/contract/InventoryProviderContractTest.java
-@Provider("inventory-service")
-@PactBroker(
-    url = "${PACT_BROKER_URL:http://localhost:9292}",
-    authentication = @PactBrokerAuth(token = "${PACT_BROKER_TOKEN}")
-)
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class InventoryProviderContractTest {
-
-    @LocalServerPort
-    private int port;
-
-    @MockBean
-    private InventoryRepository inventoryRepository;
-
-    @BeforeEach
-    void setUp(PactVerificationContext context) {
-        context.setTarget(new HttpTestTarget("localhost", port));
-    }
-
-    @TestTemplate
-    @ExtendWith(PactVerificationInvocationContextProvider.class)
-    void verifyPact(PactVerificationContext context) {
-        context.verifyInteraction();
-    }
-
-    // ตั้งค่า state สำหรับแต่ละ test
-    @State("sufficient stock available for SKU-001 and SKU-002")
-    public void sufficientStockState() {
-        Inventory inventory1 = Inventory.builder()
-                .sku("SKU-001").productId(1L)
-                .availableQuantity(50).reservedQuantity(0)
-                .reorderLevel(10).build();
-
-        Inventory inventory2 = Inventory.builder()
-                .sku("SKU-002").productId(2L)
-                .availableQuantity(100).reservedQuantity(0)
-                .reorderLevel(10).build();
-
-        when(inventoryRepository.findBySku("SKU-001")).thenReturn(Optional.of(inventory1));
-        when(inventoryRepository.findBySku("SKU-002")).thenReturn(Optional.of(inventory2));
-        when(inventoryRepository.findBySkuWithLock(any())).thenAnswer(inv -> {
-            String sku = inv.getArgument(0);
-            return "SKU-001".equals(sku) ? Optional.of(inventory1) : Optional.of(inventory2);
-        });
-        when(inventoryRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-    }
-
-    @State("insufficient stock for SKU-001")
-    public void insufficientStockState() {
-        Inventory inventory = Inventory.builder()
-                .sku("SKU-001").productId(1L)
-                .availableQuantity(5).reservedQuantity(0)
-                .reorderLevel(10).build();
-
-        when(inventoryRepository.findBySku("SKU-001")).thenReturn(Optional.of(inventory));
-    }
-}
-```
-
-### Pact Broker Setup
-
-```yaml
-# docker-compose.test.yml
-services:
-  pact-broker:
-    image: pactfoundation/pact-broker:latest
-    ports:
-      - "9292:9292"
-    environment:
-      PACT_BROKER_DATABASE_URL: "postgres://pact:password@postgres/pact_broker"
-      PACT_BROKER_DATABASE_ADAPTER: postgres
-      PACT_BROKER_BASIC_AUTH_USERNAME: admin
-      PACT_BROKER_BASIC_AUTH_PASSWORD: admin
-    depends_on:
-      - postgres
-
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: pact_broker
-      POSTGRES_USER: pact
-      POSTGRES_PASSWORD: password
-```
-
-## ขั้นตอนที่ 3405: Visual Regression Testing สำหรับ APIs
-
-"Visual regression" สำหรับ API หมายถึงการตรวจสอบว่า response structure ไม่เปลี่ยนแปลงโดยไม่ตั้งใจ
-
-### Schema Validation Testing
-
-```java
-// ApiSchemaValidationTest.java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class ApiSchemaValidationTest {
-
-    @Autowired
-    private TestRestTemplate restTemplate;
-
-    @LocalServerPort
-    private int port;
-
-    private ObjectMapper objectMapper = new ObjectMapper();
-
-    @Test
-    void productListSchemaIsStable() throws Exception {
-        ResponseEntity<String> response = restTemplate.getForEntity(
-                "/api/products?page=0&size=5", String.class);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-
-        // ตรวจสอบว่า schema ยังเหมือนเดิม
-        JsonNode body = objectMapper.readTree(response.getBody());
-        
-        assertThat(body.has("success")).isTrue();
-        assertThat(body.has("data")).isTrue();
-        assertThat(body.get("data").has("content")).isTrue();
-        assertThat(body.get("data").has("totalElements")).isTrue();
-        assertThat(body.get("data").has("totalPages")).isTrue();
-
-        // ตรวจสอบ product fields
-        JsonNode firstProduct = body.get("data").get("content").get(0);
-        assertThat(firstProduct.has("id")).isTrue();
-        assertThat(firstProduct.has("sku")).isTrue();
-        assertThat(firstProduct.has("name")).isTrue();
-        assertThat(firstProduct.has("price")).isTrue();
-        assertThat(firstProduct.has("category")).isTrue();
-
-        // ตรวจสอบว่าไม่มี field ที่ไม่ควรเห็น (sensitive data)
-        assertThat(firstProduct.has("internalCost")).isFalse();
-        assertThat(firstProduct.has("supplierId")).isFalse();
-    }
-
-    @Test
-    void orderResponseSchemaIsConsistent() throws Exception {
-        // สร้าง order ก่อน
-        CreateOrderRequest request = new CreateOrderRequest();
-        request.setItems(List.of(new CreateOrderRequest.Item(1L, 1)));
-        request.setShippingAddress("Bangkok");
-
-        ResponseEntity<String> createResponse = restTemplate.postForEntity(
-                "/api/orders", request, String.class);
-
-        assertThat(createResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-
-        JsonNode orderBody = objectMapper.readTree(createResponse.getBody());
-        JsonNode order = orderBody.get("data");
-
-        // Required fields
-        assertAll(
-                () -> assertThat(order.has("id")).isTrue(),
-                () -> assertThat(order.has("orderNumber")).isTrue(),
-                () -> assertThat(order.has("status")).isTrue(),
-                () -> assertThat(order.has("totalAmount")).isTrue(),
-                () -> assertThat(order.has("items")).isTrue(),
-                () -> assertThat(order.has("createdAt")).isTrue()
-        );
-
-        // Field types
-        assertThat(order.get("id").isNumber()).isTrue();
-        assertThat(order.get("orderNumber").isTextual()).isTrue();
-        assertThat(order.get("totalAmount").isNumber()).isTrue();
-        assertThat(order.get("items").isArray()).isTrue();
-    }
-}
-```
-
-### API Snapshot Testing
-
-```java
-// ApiSnapshotTest.java - บันทึกและเปรียบเทียบ API responses
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class ApiSnapshotTest {
-
-    @Autowired
-    private TestRestTemplate restTemplate;
-
-    private static final Path SNAPSHOTS_DIR = 
-            Paths.get("src/test/resources/api-snapshots");
-
-    @Test
-    void productApiResponseMatchesSnapshot() throws Exception {
-        ResponseEntity<String> response = restTemplate.getForEntity(
-                "/api/products/1", String.class);
-
-        String snapshotFile = "product-detail-snapshot.json";
-        Path snapshotPath = SNAPSHOTS_DIR.resolve(snapshotFile);
-
-        if (!Files.exists(snapshotPath)) {
-            // สร้าง snapshot ครั้งแรก
-            Files.createDirectories(SNAPSHOTS_DIR);
-            Files.writeString(snapshotPath, 
-                    prettyPrint(response.getBody()));
-            log.info("Created snapshot: {}", snapshotFile);
-        } else {
-            // เปรียบเทียบกับ snapshot
-            String expected = Files.readString(snapshotPath);
-            assertJsonEquals(expected, response.getBody());
-        }
-    }
-
-    private void assertJsonEquals(String expected, String actual) throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode expectedNode = mapper.readTree(expected);
-        JsonNode actualNode = mapper.readTree(actual);
-
-        // เปรียบเทียบ structure (ไม่สนใจ timestamps และ IDs)
-        assertSchemaMatch(expectedNode, actualNode, "");
-    }
-
-    private void assertSchemaMatch(JsonNode expected, JsonNode actual, String path) {
-        if (expected.isObject()) {
-            expected.fieldNames().forEachRemaining(field -> {
-                assertThat(actual.has(field))
-                        .as("Field '%s%s' should exist", path, field)
-                        .isTrue();
-                assertSchemaMatch(expected.get(field), actual.get(field), path + field + ".");
-            });
-        } else if (expected.isArray() && expected.size() > 0) {
-            assertThat(actual.isArray())
-                    .as("Path '%s' should be array", path)
-                    .isTrue();
-        }
-    }
-
-    private String prettyPrint(String json) throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        return mapper.writerWithDefaultPrettyPrinter()
-                .writeValueAsString(mapper.readTree(json));
-    }
-}
-```
-
-## ขั้นตอนที่ 3406: Synthetic Monitoring
-
-Synthetic monitoring คือการส่ง requests จำลองไปยัง production ตลอดเวลา เพื่อตรวจสอบว่าระบบยังทำงานอยู่
-
-```java
-// SyntheticMonitor.java
-@Component
-@RequiredArgsConstructor
-@Slf4j
-public class SyntheticMonitor {
-
-    private final RestTemplate restTemplate;
-    private final MeterRegistry meterRegistry;
-    private final AlertService alertService;
-
-    @Value("${monitoring.base-url:https://api.shophub.com}")
-    private String baseUrl;
-
-    // ทดสอบทุก 1 นาที
-    @Scheduled(fixedRate = 60000)
-    public void runHealthChecks() {
-        checkEndpoint("health", "/actuator/health", "UP", 
-                resp -> ((Map) resp.getBody()).get("status").equals("UP"));
-        
-        checkEndpoint("product-list", "/api/products?page=0&size=1", null,
-                resp -> resp.getStatusCode().is2xxSuccessful());
-        
-        checkEndpoint("product-search", "/api/products?keyword=laptop", null,
-                resp -> resp.getStatusCode().is2xxSuccessful());
-    }
-
-    // ทดสอบ user journey ทุก 5 นาที
-    @Scheduled(fixedRate = 300000)
-    public void runUserJourneyCheck() {
-        runWithMetrics("user-journey", () -> {
-            // 1. Login
-            String token = performLogin();
-            if (token == null) {
-                alertService.alert("CRITICAL", "Login endpoint failure");
-                return;
-            }
-
-            // 2. Browse products
-            List<Long> productIds = browseProducts(token);
-            if (productIds.isEmpty()) {
-                alertService.alert("HIGH", "Product listing failure");
-                return;
-            }
-
-            // 3. Check product detail
-            boolean productOk = checkProductDetail(token, productIds.get(0));
-            if (!productOk) {
-                alertService.alert("HIGH", "Product detail failure");
-            }
-
-            log.info("User journey check passed");
-        });
-    }
-
-    private void checkEndpoint(String name, String path, String expectedValue,
-                                 java.util.function.Predicate<ResponseEntity<Map>> checker) {
-        Timer timer = meterRegistry.timer("synthetic.check.duration", "endpoint", name);
-        Counter successCounter = meterRegistry.counter("synthetic.check.success", "endpoint", name);
-        Counter failureCounter = meterRegistry.counter("synthetic.check.failure", "endpoint", name);
-
-        try {
-            timer.record(() -> {
-                ResponseEntity<Map> response = restTemplate.getForEntity(
-                        baseUrl + path, Map.class);
-                
-                if (checker.test(response)) {
-                    successCounter.increment();
-                } else {
-                    failureCounter.increment();
-                    alertService.alert("HIGH", "Endpoint check failed: " + name);
-                }
-            });
-        } catch (Exception e) {
-            failureCounter.increment();
-            log.error("Synthetic check failed for {}: {}", name, e.getMessage());
-            alertService.alert("CRITICAL", "Endpoint unreachable: " + name);
-        }
-    }
-
-    private void runWithMetrics(String checkName, Runnable check) {
-        long startTime = System.currentTimeMillis();
-        try {
-            check.run();
-            long duration = System.currentTimeMillis() - startTime;
-            meterRegistry.timer("synthetic.journey.duration", "journey", checkName)
-                    .record(duration, TimeUnit.MILLISECONDS);
-        } catch (Exception e) {
-            log.error("Journey check failed: {}", checkName, e);
-            alertService.alert("CRITICAL", "User journey failure: " + e.getMessage());
-        }
-    }
-
-    private String performLogin() {
-        try {
-            Map<String, String> loginRequest = Map.of(
-                    "email", "synthetic-test@shophub.com",
-                    "password", "synthetic-test-pass"
-            );
-            ResponseEntity<Map> response = restTemplate.postForEntity(
-                    baseUrl + "/api/auth/login", loginRequest, Map.class);
-
-            if (response.getStatusCode().is2xxSuccessful()) {
-                return (String) ((Map) response.getBody().get("data")).get("token");
-            }
-        } catch (Exception e) {
-            log.error("Login failed in synthetic test: {}", e.getMessage());
-        }
-        return null;
-    }
-
-    private List<Long> browseProducts(String token) {
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("Authorization", "Bearer " + token);
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    baseUrl + "/api/products?page=0&size=5",
-                    HttpMethod.GET, entity, Map.class);
-
-            if (response.getStatusCode().is2xxSuccessful()) {
-                Map data = (Map) response.getBody().get("data");
-                List<Map> content = (List<Map>) data.get("content");
-                return content.stream()
-                        .map(p -> ((Number) p.get("id")).longValue())
-                        .collect(Collectors.toList());
-            }
-        } catch (Exception e) {
-            log.error("Product browsing failed in synthetic test: {}", e.getMessage());
-        }
-        return Collections.emptyList();
-    }
-
-    private boolean checkProductDetail(String token, Long productId) {
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("Authorization", "Bearer " + token);
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    baseUrl + "/api/products/" + productId,
-                    HttpMethod.GET, entity, Map.class);
-
-            return response.getStatusCode().is2xxSuccessful();
-        } catch (Exception e) {
-            log.error("Product detail check failed: {}", e.getMessage());
-            return false;
-        }
-    }
-}
-```
-
-### AlertService สำหรับ Synthetic Monitoring
-
-```java
-// AlertService.java
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class AlertService {
-
-    private final SlackWebhookClient slackClient;
-    private final PagerDutyClient pagerDutyClient;
-
-    // Anti-flood: ไม่แจ้งเตือนซ้ำในช่วงเวลาสั้น ๆ
-    private final Map<String, Instant> lastAlertTimes = new ConcurrentHashMap<>();
-    private static final Duration ALERT_COOLDOWN = Duration.ofMinutes(5);
-
-    public void alert(String severity, String message) {
-        String alertKey = severity + ":" + message;
-        Instant lastAlert = lastAlertTimes.get(alertKey);
-
-        if (lastAlert != null && 
-                Duration.between(lastAlert, Instant.now()).compareTo(ALERT_COOLDOWN) < 0) {
-            log.debug("Alert suppressed (cooldown): {}", message);
-            return;
-        }
-
-        lastAlertTimes.put(alertKey, Instant.now());
-
-        log.warn("ALERT [{}]: {}", severity, message);
-
-        String emoji = switch (severity) {
-            case "CRITICAL" -> "🚨";
-            case "HIGH" -> "⚠️";
-            case "MEDIUM" -> "⚡";
-            default -> "ℹ️";
-        };
-
-        slackClient.send(String.format("%s [%s] %s", emoji, severity, message));
-
-        if ("CRITICAL".equals(severity)) {
-            pagerDutyClient.triggerIncident(message);
-        }
-    }
-}
-```
-
-## ขั้นตอนที่ 3407: Testing กับ Production Data Snapshots
-
-ใช้ข้อมูลจาก production ใน test environment เพื่อความใกล้เคียงกับ real-world scenarios
-
-### Database Snapshot Strategy
-
-```bash
-#!/bin/bash
-# scripts/create-test-snapshot.sh
-# สร้าง anonymized snapshot จาก production data
-
-set -e
-
-PROD_HOST="prod-db.shophub.internal"
-TEST_HOST="test-db.shophub.internal"
-DB_NAME="shophub"
-SNAPSHOT_DATE=$(date +%Y%m%d)
-SNAPSHOT_FILE="snapshot_${SNAPSHOT_DATE}.sql"
-
-echo "Creating production snapshot..."
-
-# Dump production data (specific tables only)
-pg_dump \
-  --host=$PROD_HOST \
-  --username=readonly_user \
-  --dbname=$DB_NAME \
-  --table=products \
-  --table=categories \
-  --table=inventory \
-  --no-owner \
-  --no-privileges \
-  --format=custom \
-  --file=/tmp/${SNAPSHOT_FILE}
-
-echo "Anonymizing sensitive data..."
-
-# Restore ไปยัง test DB ก่อน
-pg_restore \
-  --host=$TEST_HOST \
-  --username=admin \
-  --dbname=test_snapshot \
-  --clean \
-  /tmp/${SNAPSHOT_FILE}
-
-# Anonymize PII data ใน test DB
-psql --host=$TEST_HOST --username=admin --dbname=test_snapshot << 'SQL'
-  -- Anonymize user data
-  UPDATE users SET
-    email = 'user_' || id || '@test.example.com',
-    first_name = 'Test',
-    last_name = 'User_' || id,
-    phone = '000-000-' || LPAD(CAST(id AS VARCHAR), 4, '0');
-
-  -- Anonymize order data
-  UPDATE orders SET
-    shipping_address = 'Test Address ' || id || ', Bangkok';
-
-  -- Remove payment info
-  DELETE FROM payment_methods;
-  DELETE FROM payment_transactions;
-  
-  -- ลด scale ลง (เอาเฉพาะ 10% เพื่อความเร็วใน test)
-  DELETE FROM orders WHERE id NOT IN (
-    SELECT id FROM orders ORDER BY created_at DESC LIMIT 10000
-  );
-  
-  VACUUM ANALYZE;
-SQL
-
-echo "Snapshot created and anonymized: $SNAPSHOT_FILE"
-echo "Uploading to S3..."
-aws s3 cp /tmp/${SNAPSHOT_FILE} s3://shophub-test-snapshots/${SNAPSHOT_FILE}
-echo "Done!"
-```
-
-### TestContainers กับ Production Snapshot
-
-```java
-// ProductionSnapshotIT.java
-@SpringBootTest
-@ActiveProfiles("snapshot-test")
-@Testcontainers
-class ProductionSnapshotIT {
-
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15")
-            .withInitScript("production-snapshot-anonymized.sql")
-            .withDatabaseName("shophub_test")
-            .withUsername("test")
-            .withPassword("test");
-
-    @DynamicPropertySource
-    static void registerDataSourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-    }
-
-    @Autowired
-    private ProductService productService;
-
     @Autowired
     private OrderService orderService;
-
+    
+    @Autowired
+    private ChaosMonkeySettings chaosMonkeySettings;
+    
     @Test
-    void shouldHandleProductionDataVolume() {
-        // ทดสอบกับ data volume จริงจาก production
-        Page<ProductDto> products = productService.searchProducts("", null, 
-                PageRequest.of(0, 20));
+    @DisplayName("Order service ควร fallback เมื่อ latency สูง")
+    void orderServiceShouldHandleHighLatency() {
+        // Enable chaos
+        chaosMonkeySettings.getAssaultProperties().setLatencyActive(true);
+        chaosMonkeySettings.getAssaultProperties().setLatencyRangeStart(2000);
+        chaosMonkeySettings.getAssaultProperties().setLatencyRangeEnd(3000);
         
-        assertThat(products.getTotalElements()).isGreaterThan(1000);
-        assertThat(products.getContent()).hasSize(20);
+        // ทดสอบว่า service ยังทำงานได้ภายใน timeout
+        long start = System.currentTimeMillis();
+        
+        assertDoesNotThrow(() -> {
+            OrderResult result = orderService.processOrder(createTestOrder());
+            // อาจล้มเหลว แต่ไม่ควร throw exception ที่ unhandled
+        });
+        
+        long duration = System.currentTimeMillis() - start;
+        assertThat(duration).isLessThan(5000); // ต้องมี timeout < 5s
     }
-
+    
     @Test
-    void queryPerformanceShouldMeetSLA() {
-        long startTime = System.currentTimeMillis();
+    @DisplayName("ระบบควร return fallback response เมื่อ repository เกิดข้อผิดพลาด")
+    void systemShouldReturnFallbackOnRepositoryError() {
+        // Enable exception assault
+        chaosMonkeySettings.getAssaultProperties().setExceptionsActive(true);
+        chaosMonkeySettings.getAssaultProperties().setException(
+            new RuntimeException("Chaos: Database simulated failure")
+        );
         
-        // Query ที่ complex พอสมควร
-        Page<ProductDto> results = productService.searchProducts(
-                "laptop", "electronics", PageRequest.of(0, 10));
+        // ProductService ควรมี fallback
+        List<Product> products = productService.findFeaturedProducts();
         
-        long duration = System.currentTimeMillis() - startTime;
-        
-        // SLA: search ต้องเร็วกว่า 200ms
-        assertThat(duration).isLessThan(200);
-        assertThat(results).isNotNull();
-    }
-
-    @Test
-    void reportGenerationWithRealData() {
-        // ทดสอบ report generation กับ data จริง
-        LocalDate start = LocalDate.now().minusMonths(1);
-        LocalDate end = LocalDate.now();
-        
-        SalesReport report = orderService.generateSalesReport(start, end);
-        
-        assertThat(report).isNotNull();
-        assertThat(report.getTotalOrders()).isGreaterThan(0);
-        assertThat(report.getTotalRevenue()).isGreaterThan(BigDecimal.ZERO);
+        // ไม่ควรได้ null - ควรได้ empty list หรือ cached data
+        assertThat(products).isNotNull();
     }
 }
 ```
 
-### Data Masking Utilities
+### Resilience Patterns ที่รองรับ Chaos
 
 ```java
-// DataMaskingService.java
+// service/ResilientProductService.java
 @Service
-public class DataMaskingService {
-
-    // Mask email: john.doe@example.com → j***@example.com
-    public String maskEmail(String email) {
-        if (email == null || !email.contains("@")) return email;
-        String[] parts = email.split("@");
-        String local = parts[0];
-        String domain = parts[1];
-        return local.charAt(0) + "***@" + domain;
+public class ResilientProductService {
+    
+    private final ProductRepository productRepository;
+    private final Cache<String, Product> localCache;
+    
+    // Circuit breaker + fallback
+    @CircuitBreaker(name = "productService", fallbackMethod = "getProductFallback")
+    @TimeLimiter(name = "productService")
+    @Retry(name = "productService")
+    public CompletableFuture<Product> findById(String productId) {
+        return CompletableFuture.supplyAsync(() -> 
+            productRepository.findById(productId)
+                .orElseThrow(() -> new ProductNotFoundException(productId))
+        );
     }
-
-    // Mask phone: 0812345678 → 081****678
-    public String maskPhone(String phone) {
-        if (phone == null || phone.length() < 7) return phone;
-        int visibleStart = 3;
-        int visibleEnd = 3;
-        String masked = phone.substring(0, visibleStart) +
-                "*".repeat(phone.length() - visibleStart - visibleEnd) +
-                phone.substring(phone.length() - visibleEnd);
-        return masked;
-    }
-
-    // Mask credit card: 4111111111111234 → ****1234
-    public String maskCreditCard(String cardNumber) {
-        if (cardNumber == null || cardNumber.length() < 4) return cardNumber;
-        return "****" + cardNumber.substring(cardNumber.length() - 4);
-    }
-
-    // Deterministic fake name (เหมือนกันทุกครั้งสำหรับ user id เดิม)
-    public String getFakeName(Long userId) {
-        String[] firstNames = {"สมชาย", "สมศรี", "วิชัย", "นภา", "กมล", "ปราณี"};
-        String[] lastNames = {"ใจดี", "รักชาติ", "สุขใจ", "วงศ์ทอง", "พงษ์ไทย"};
-        int firstIdx = (int) (userId % firstNames.length);
-        int lastIdx = (int) ((userId / firstNames.length) % lastNames.length);
-        return firstNames[firstIdx] + " " + lastNames[lastIdx];
-    }
-}
-```
-
-## ขั้นตอนที่ 3408: Test Environment Management
-
-```java
-// TestEnvironmentManager.java - จัดการ test environments
-@Configuration
-@Profile("integration-test")
-public class TestEnvironmentConfig {
-
-    // เริ่ม Kafka container สำหรับ integration tests
-    @Bean
-    public KafkaContainer kafkaContainer() {
-        KafkaContainer kafka = new KafkaContainer(
-                DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
-        kafka.start();
-        return kafka;
-    }
-
-    @Bean
-    public GenericContainer<?> redisContainer() {
-        GenericContainer<?> redis = new GenericContainer<>(
-                DockerImageName.parse("redis:7-alpine"))
-                .withExposedPorts(6379);
-        redis.start();
-        return redis;
-    }
-
-    @Bean
-    @DependsOn("kafkaContainer")
-    public KafkaTemplate<String, Object> testKafkaTemplate(KafkaContainer kafka) {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
-
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(props));
-    }
-}
-```
-
-### Test Utilities
-
-```java
-// TestDataFactory.java - สร้าง test data ง่าย ๆ
-@Component
-public class TestDataFactory {
-
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    private ProductRepository productRepository;
-
-    @Autowired
-    private InventoryRepository inventoryRepository;
-
-    @Autowired
-    private PasswordEncoder passwordEncoder;
-
-    @Transactional
-    public User createTestUser(String email) {
-        return userRepository.save(User.builder()
-                .username("testuser_" + System.currentTimeMillis())
-                .email(email)
-                .password(passwordEncoder.encode("Test1234!"))
-                .firstName("Test")
-                .lastName("User")
-                .roles(Set.of("ROLE_USER"))
-                .active(true)
-                .build());
-    }
-
-    @Transactional
-    public Product createTestProduct(String sku) {
-        Product product = productRepository.save(Product.builder()
-                .sku(sku)
-                .name("Test Product " + sku)
-                .description("Test description")
-                .price(new BigDecimal("99.99"))
-                .category("electronics")
-                .available(true)
-                .build());
-
-        inventoryRepository.save(Inventory.builder()
-                .sku(sku)
-                .productId(product.getId())
-                .availableQuantity(100)
-                .reservedQuantity(0)
-                .reorderLevel(10)
-                .build());
-
-        return product;
-    }
-
-    @Transactional
-    public void cleanupTestData() {
-        inventoryRepository.deleteAll();
-        productRepository.deleteAll();
-        userRepository.deleteAll();
-    }
-}
-```
-
-## ขั้นตอนที่ 3409-3440: สรุปและ Testing Strategy
-
-### Testing สำหรับ Microservices
-
-```java
-// Integration Test สำหรับ Order Flow ทั้ง end-to-end
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
-@ActiveProfiles("integration-test")
-class OrderFlowIntegrationTest {
-
-    @Autowired
-    private TestRestTemplate restTemplate;
-
-    @Autowired
-    private TestDataFactory testDataFactory;
-
-    private User testUser;
-    private Product testProduct;
-
-    @BeforeEach
-    void setUp() {
-        testUser = testDataFactory.createTestUser("test@flow.com");
-        testProduct = testDataFactory.createTestProduct("TEST-SKU-001");
-    }
-
-    @AfterEach
-    void tearDown() {
-        testDataFactory.cleanupTestData();
-    }
-
-    @Test
-    void completeOrderFlowShouldWork() throws Exception {
-        // 1. Login
-        LoginRequest loginRequest = new LoginRequest("test@flow.com", "Test1234!");
-        ResponseEntity<ApiResponse<AuthResponse>> loginResponse = restTemplate.postForEntity(
-                "/api/auth/login", loginRequest,
-                new ParameterizedTypeReference<>() {});
-
-        assertThat(loginResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-        String token = loginResponse.getBody().getData().getToken();
-
-        // 2. สร้าง order
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + token);
-
-        CreateOrderRequest orderRequest = new CreateOrderRequest();
-        orderRequest.setItems(List.of(new CreateOrderRequest.Item(testProduct.getId(), 2)));
-        orderRequest.setShippingAddress("123 Test St, Bangkok");
-
-        HttpEntity<CreateOrderRequest> entity = new HttpEntity<>(orderRequest, headers);
-        ResponseEntity<ApiResponse<OrderDto>> orderResponse = restTemplate.exchange(
-                "/api/orders", HttpMethod.POST, entity,
-                new ParameterizedTypeReference<>() {});
-
-        assertThat(orderResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        String orderNumber = orderResponse.getBody().getData().getOrderNumber();
-        assertThat(orderNumber).startsWith("ORD-");
-
-        // 3. ตรวจสอบ order status
-        ResponseEntity<ApiResponse<OrderDto>> statusResponse = restTemplate.exchange(
-                "/api/orders/" + orderNumber, HttpMethod.GET,
-                new HttpEntity<>(headers),
-                new ParameterizedTypeReference<>() {});
-
-        assertThat(statusResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(statusResponse.getBody().getData().getStatus()).isEqualTo("PENDING");
-
-        // 4. รอให้ Kafka process events (async)
-        Thread.sleep(2000);
-
-        // 5. ตรวจสอบว่า inventory ถูกอัปเดต
-        ResponseEntity<Map> inventoryResponse = restTemplate.getForEntity(
-                "/api/inventory/TEST-SKU-001", Map.class);
+    
+    // Fallback method
+    public CompletableFuture<Product> getProductFallback(String productId, Exception e) {
+        log.warn("Circuit breaker open for product {}, using fallback: {}", 
+            productId, e.getMessage());
         
-        // Available stock ควรลดลง 2 หน่วย
-        assertThat((int) ((Map) inventoryResponse.getBody().get("data"))
-                .get("availableQuantity")).isEqualTo(98);
+        // ลอง local cache ก่อน
+        Product cached = localCache.getIfPresent(productId);
+        if (cached != null) {
+            return CompletableFuture.completedFuture(cached);
+        }
+        
+        // Return stub product
+        return CompletableFuture.completedFuture(
+            Product.stub(productId, "Product temporarily unavailable")
+        );
     }
 }
-```
-
-### Test Coverage Report
-
-```xml
-<!-- pom.xml - JaCoCo configuration -->
-<plugin>
-    <groupId>org.jacoco</groupId>
-    <artifactId>jacoco-maven-plugin</artifactId>
-    <version>0.8.11</version>
-    <configuration>
-        <excludes>
-            <exclude>**/*Application.class</exclude>
-            <exclude>**/*Config.class</exclude>
-            <exclude>**/dto/**</exclude>
-            <exclude>**/entity/**</exclude>
-        </excludes>
-    </configuration>
-    <executions>
-        <execution>
-            <goals>
-                <goal>prepare-agent</goal>
-            </goals>
-        </execution>
-        <execution>
-            <id>report</id>
-            <phase>test</phase>
-            <goals>
-                <goal>report</goal>
-            </goals>
-        </execution>
-        <execution>
-            <id>check</id>
-            <goals>
-                <goal>check</goal>
-            </goals>
-            <configuration>
-                <rules>
-                    <rule>
-                        <element>BUNDLE</element>
-                        <limits>
-                            <limit>
-                                <counter>LINE</counter>
-                                <value>COVEREDRATIO</value>
-                                <minimum>0.80</minimum>  <!-- 80% line coverage -->
-                            </limit>
-                            <limit>
-                                <counter>BRANCH</counter>
-                                <value>COVEREDRATIO</value>
-                                <minimum>0.70</minimum>  <!-- 70% branch coverage -->
-                            </limit>
-                        </limits>
-                    </rule>
-                </rules>
-            </configuration>
-        </execution>
-    </executions>
-</plugin>
-```
-
-### Complete Testing Checklist
-
-```yaml
-# testing-checklist.yml
-unit-tests:
-  - service layer coverage > 80%
-  - repository layer mocked
-  - edge cases covered
-  - happy path + error paths
-
-integration-tests:
-  - database integration (TestContainers)
-  - Kafka messaging (EmbeddedKafka)
-  - Redis caching
-  - REST endpoint tests
-
-contract-tests:
-  - consumer contracts published to Pact Broker
-  - provider verifications passing
-  - all service pairs covered
-
-performance-tests:
-  - p95 < 200ms for read endpoints
-  - p99 < 1000ms for write endpoints
-  - 99.9% success rate under normal load
-  - graceful degradation under overload
-
-chaos-tests:
-  - latency injection (circuit breaker triggers)
-  - exception injection (fallbacks work)
-  - service unavailability (graceful degradation)
-
-synthetic-monitoring:
-  - health check every 1 minute
-  - user journey every 5 minutes
-  - alert on 2+ consecutive failures
-  - PagerDuty for critical alerts
 ```
 
 ---
 
-*[← Part 94: Machine Learning Integration](./part-94-machine-learning.md) | [Part 96: Next Chapter →](./part-96-next.md)*
+## ขั้นตอนที่ 3402: Automated Load Testing ใน CI กับ k6 Gates
+
+### k6 Load Test Script
+
+```javascript
+// tests/load/api-load-test.js
+import http from 'k6/http';
+import { check, sleep, group } from 'k6';
+import { Rate, Trend, Counter } from 'k6/metrics';
+
+// Custom metrics
+const errorRate = new Rate('error_rate');
+const apiLatency = new Trend('api_latency', true);
+const successfulOrders = new Counter('successful_orders');
+
+export const options = {
+    stages: [
+        { duration: '1m', target: 50 },    // Ramp up
+        { duration: '3m', target: 100 },   // Normal load
+        { duration: '1m', target: 200 },   // Stress test
+        { duration: '2m', target: 100 },   // Back to normal
+        { duration: '1m', target: 0 },     // Ramp down
+    ],
+    
+    // Performance gates - test ล้มเหลวถ้าไม่ผ่าน
+    thresholds: {
+        http_req_duration: [
+            'p(95)<500',     // 95% requests < 500ms
+            'p(99)<1000',    // 99% requests < 1s
+        ],
+        http_req_failed: ['rate<0.01'],   // Error rate < 1%
+        error_rate: ['rate<0.05'],         // Custom error rate < 5%
+        api_latency: ['p(90)<300'],
+    },
+};
+
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+
+export default function() {
+    group('Product browsing', () => {
+        // Browse products
+        const productsRes = http.get(`${BASE_URL}/api/v1/products?limit=20`);
+        
+        check(productsRes, {
+            'products status 200': (r) => r.status === 200,
+            'products response time < 200ms': (r) => r.timings.duration < 200,
+        });
+        
+        errorRate.add(productsRes.status !== 200);
+        apiLatency.add(productsRes.timings.duration);
+        
+        sleep(0.5);
+        
+        // Get product detail
+        if (productsRes.status === 200) {
+            const products = JSON.parse(productsRes.body);
+            if (products.content && products.content.length > 0) {
+                const productId = products.content[0].id;
+                
+                const detailRes = http.get(`${BASE_URL}/api/v1/products/${productId}`);
+                check(detailRes, {
+                    'product detail status 200': (r) => r.status === 200,
+                    'product detail < 150ms': (r) => r.timings.duration < 150,
+                });
+            }
+        }
+    });
+    
+    sleep(1);
+    
+    group('User flow', () => {
+        // Login
+        const loginRes = http.post(`${BASE_URL}/api/v1/auth/login`, 
+            JSON.stringify({
+                email: 'test@example.com',
+                password: 'testpassword'
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+        );
+        
+        if (loginRes.status === 200) {
+            const token = JSON.parse(loginRes.body).accessToken;
+            const headers = { 
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            
+            // Add to cart
+            const cartRes = http.post(`${BASE_URL}/api/v1/cart/items`,
+                JSON.stringify({ productId: 'prod-1', quantity: 1 }),
+                { headers }
+            );
+            
+            check(cartRes, {
+                'add to cart status 200': (r) => r.status === 200,
+            });
+        }
+    });
+    
+    sleep(2);
+}
+
+export function handleSummary(data) {
+    return {
+        'stdout': textSummary(data, { indent: ' ', enableColors: true }),
+        'load-test-results.json': JSON.stringify(data),
+    };
+}
+```
+
+### CI Pipeline Integration
+
+```yaml
+# .github/workflows/load-test.yml
+name: Load Testing Gate
+
+on:
+  pull_request:
+    branches: [main, staging]
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Start application
+      run: |
+        docker-compose -f docker-compose.test.yml up -d
+        ./scripts/wait-for-healthy.sh http://localhost:8080/actuator/health 120
+    
+    - name: Run k6 load test
+      uses: grafana/k6-action@v0.3.1
+      with:
+        filename: tests/load/api-load-test.js
+        flags: --out json=results/load-test.json
+      env:
+        BASE_URL: http://localhost:8080
+    
+    - name: Analyze results
+      run: |
+        python3 scripts/analyze-load-test.py results/load-test.json
+    
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: load-test-results
+        path: results/
+    
+    - name: Fail if thresholds exceeded
+      run: |
+        if [ -f results/threshold-failures.txt ]; then
+          echo "Load test FAILED! Thresholds exceeded:"
+          cat results/threshold-failures.txt
+          exit 1
+        fi
+```
+
+---
+
+## ขั้นตอนที่ 3403: Contract Testing กับ Pact Broker
+
+Contract testing ตรวจสอบว่า consumer และ provider ตกลงเรื่อง API contract ตรงกัน
+
+### Consumer Contract Test
+
+```java
+// consumer/OrderServiceContractTest.java
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "ProductService", port = "8080")
+class OrderServiceContractTest {
+    
+    @Pact(consumer = "OrderService")
+    public RequestResponsePact createPact(PactDslWithProvider builder) {
+        return builder
+            .given("product exists with id prod-1")
+            .uponReceiving("a request for product details")
+                .path("/api/v1/products/prod-1")
+                .method("GET")
+                .headers(Map.of("Accept", "application/json"))
+            .willRespondWith()
+                .status(200)
+                .headers(Map.of("Content-Type", "application/json;charset=UTF-8"))
+                .body(new PactDslJsonBody()
+                    .stringType("id", "prod-1")
+                    .stringType("name", "Sample Product")
+                    .decimalType("price", 199.99)
+                    .booleanType("inStock", true)
+                    .integerType("stockQuantity", 100))
+            .toPact();
+    }
+    
+    @Test
+    @PactTestFor(pactMethod = "createPact")
+    void testGetProductById(MockServer mockServer) {
+        // Arrange
+        WebClient client = WebClient.create(mockServer.getUrl());
+        
+        // Act
+        Product product = client.get()
+            .uri("/api/v1/products/prod-1")
+            .retrieve()
+            .bodyToMono(Product.class)
+            .block();
+        
+        // Assert
+        assertThat(product).isNotNull();
+        assertThat(product.getId()).isEqualTo("prod-1");
+        assertThat(product.getPrice()).isEqualByComparingTo("199.99");
+    }
+    
+    @Pact(consumer = "OrderService")
+    public RequestResponsePact createNotFoundPact(PactDslWithProvider builder) {
+        return builder
+            .given("product does not exist")
+            .uponReceiving("a request for non-existent product")
+                .path("/api/v1/products/nonexistent")
+                .method("GET")
+            .willRespondWith()
+                .status(404)
+                .body(new PactDslJsonBody()
+                    .stringType("error", "Product not found")
+                    .stringType("productId", "nonexistent"))
+            .toPact();
+    }
+}
+```
+
+### Provider Verification
+
+```java
+// provider/ProductServicePactVerificationTest.java
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Provider("ProductService")
+@PactBroker(
+    url = "${pact.broker.url}",
+    authentication = @PactBrokerAuth(
+        username = "${pact.broker.username}",
+        password = "${pact.broker.password}"
+    )
+)
+class ProductServicePactVerificationTest {
+    
+    @LocalServerPort
+    private int port;
+    
+    @Autowired
+    private ProductRepository productRepository;
+    
+    @BeforeEach
+    void setUp(PactVerificationContext context) {
+        context.setTarget(new HttpTestTarget("localhost", port));
+    }
+    
+    @TestTemplate
+    @ExtendWith(PactVerificationInvocationContextProvider.class)
+    void pactVerificationTestTemplate(PactVerificationContext context) {
+        context.verifyInteraction();
+    }
+    
+    // State setup methods
+    @State("product exists with id prod-1")
+    public void productExistsState() {
+        // Create test data
+        productRepository.save(Product.builder()
+            .id("prod-1")
+            .name("Sample Product")
+            .price(new BigDecimal("199.99"))
+            .inStock(true)
+            .stockQuantity(100)
+            .build());
+    }
+    
+    @State("product does not exist")
+    public void productDoesNotExistState() {
+        // Clean up any existing test product
+        productRepository.deleteById("nonexistent");
+    }
+    
+    @AfterEach
+    void cleanUp() {
+        productRepository.deleteById("prod-1");
+    }
+}
+```
+
+### Pact Broker CI Pipeline
+
+```yaml
+# .github/workflows/contract-tests.yml
+name: Contract Testing
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  consumer-tests:
+    name: Consumer Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run consumer contract tests
+      run: mvn test -pl order-service -Dtest=*ContractTest
+    
+    - name: Publish pacts to broker
+      run: |
+        mvn pact:publish \
+          -Dpact.broker.url=${{ secrets.PACT_BROKER_URL }} \
+          -Dpact.broker.token=${{ secrets.PACT_BROKER_TOKEN }} \
+          -Dpact.consumer.version=${{ github.sha }}
+
+  provider-tests:
+    name: Provider Verification
+    needs: consumer-tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Verify contracts
+      run: |
+        mvn test -pl product-service -Dtest=*PactVerification \
+          -Dpact.broker.url=${{ secrets.PACT_BROKER_URL }} \
+          -Dpact.broker.token=${{ secrets.PACT_BROKER_TOKEN }}
+    
+    - name: Can I deploy?
+      run: |
+        pact-broker can-i-deploy \
+          --pacticipant ProductService \
+          --version ${{ github.sha }} \
+          --to-environment production \
+          --broker-base-url ${{ secrets.PACT_BROKER_URL }}
+```
+
+---
+
+## ขั้นตอนที่ 3404: Synthetic Monitoring กับ Playwright
+
+Synthetic monitoring ใช้ automated browser tests เพื่อ monitor production continuously
+
+```typescript
+// tests/synthetic/checkout-flow.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Critical user flows - Production Monitoring', () => {
+    
+    test('Complete checkout flow', async ({ page }) => {
+        const startTime = Date.now();
+        
+        // 1. Navigate to shop
+        await page.goto(process.env.APP_URL || 'https://shophub.example.com');
+        await expect(page).toHaveTitle(/ShopHub/);
+        
+        // 2. Search for product
+        await page.fill('[data-testid="search-input"]', 'test product');
+        await page.click('[data-testid="search-button"]');
+        await expect(page.locator('[data-testid="search-results"]')).toBeVisible();
+        
+        // 3. Add to cart
+        await page.click('[data-testid="product-card"]:first-child [data-testid="add-to-cart"]');
+        await expect(page.locator('[data-testid="cart-count"]')).toContainText('1');
+        
+        // 4. Login
+        await page.click('[data-testid="login-button"]');
+        await page.fill('[data-testid="email-input"]', process.env.TEST_USER_EMAIL!);
+        await page.fill('[data-testid="password-input"]', process.env.TEST_USER_PASSWORD!);
+        await page.click('[data-testid="submit-login"]');
+        
+        await expect(page.locator('[data-testid="user-menu"]')).toBeVisible({ timeout: 5000 });
+        
+        // 5. Checkout
+        await page.click('[data-testid="cart-icon"]');
+        await page.click('[data-testid="checkout-button"]');
+        
+        // Check checkout page loaded
+        await expect(page).toHaveURL(/\/checkout/);
+        
+        const flowDuration = Date.now() - startTime;
+        console.log(`Checkout flow completed in ${flowDuration}ms`);
+        
+        // Assert performance SLO
+        expect(flowDuration).toBeLessThan(30000); // 30s max
+    });
+    
+    test('API health check', async ({ request }) => {
+        const response = await request.get('/actuator/health');
+        
+        expect(response.status()).toBe(200);
+        
+        const health = await response.json();
+        expect(health.status).toBe('UP');
+        
+        // Check specific components
+        expect(health.components.db.status).toBe('UP');
+        expect(health.components.redis.status).toBe('UP');
+    });
+    
+    test('Search latency SLO', async ({ page }) => {
+        await page.goto('/');
+        
+        const searchStart = Date.now();
+        await page.fill('[data-testid="search-input"]', 'laptop');
+        await page.click('[data-testid="search-button"]');
+        await page.waitForResponse(res => res.url().includes('/api/v1/products/search'));
+        
+        const searchLatency = Date.now() - searchStart;
+        expect(searchLatency).toBeLessThan(1000); // Search < 1s
+    });
+});
+```
+
+### Playwright CI/CD Schedule
+
+```yaml
+# .github/workflows/synthetic-monitoring.yml
+name: Synthetic Monitoring
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # ทุก 15 นาที
+
+jobs:
+  synthetic-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Playwright
+      run: npx playwright install chromium
+    
+    - name: Run synthetic tests
+      run: |
+        npx playwright test tests/synthetic/ \
+          --reporter=json \
+          --output=synthetic-results.json
+      env:
+        APP_URL: https://shophub.example.com
+        TEST_USER_EMAIL: ${{ secrets.SYNTHETIC_USER_EMAIL }}
+        TEST_USER_PASSWORD: ${{ secrets.SYNTHETIC_USER_PASSWORD }}
+    
+    - name: Alert on failure
+      if: failure()
+      uses: slackapi/slack-github-action@v1.24.0
+      with:
+        payload: |
+          {
+            "text": "⚠️ Synthetic monitoring FAILED! Check production: https://shophub.example.com",
+            "attachments": [{"color": "danger", "title": "Test run failed"}]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+---
+
+## ขั้นตอนที่ 3405: Testing กับ Production Data Snapshots (Masked)
+
+```java
+// testdata/ProductionDataMaskingService.java
+@Service
+public class ProductionDataMaskingService {
+    
+    public void createMaskedSnapshot(String sourceDb, String targetDb) {
+        log.info("กำลังสร้าง masked snapshot จาก {} ไป {}", sourceDb, targetDb);
+        
+        // 1. Copy production schema + data
+        copySchema(sourceDb, targetDb);
+        copyData(sourceDb, targetDb);
+        
+        // 2. Mask sensitive data
+        maskPersonalData(targetDb);
+        maskPaymentData(targetDb);
+        maskCredentials(targetDb);
+        
+        log.info("Masked snapshot สร้างเสร็จแล้ว");
+    }
+    
+    private void maskPersonalData(String db) {
+        jdbcTemplate.update("""
+            UPDATE users SET
+                email = CONCAT('user', id, '@masked.example.com'),
+                phone = CONCAT('09', SUBSTRING(MD5(RANDOM()::TEXT), 1, 8)),
+                first_name = 'TestFirst' || id::TEXT,
+                last_name = 'TestLast' || id::TEXT,
+                address = 'Masked Address',
+                national_id = REPEAT('*', 13)
+            WHERE true
+        """);
+    }
+    
+    private void maskPaymentData(String db) {
+        jdbcTemplate.update("""
+            UPDATE payment_methods SET
+                card_number_masked = CONCAT('****-****-****-', RIGHT(card_number, 4)),
+                card_number = NULL,
+                cvv = NULL,
+                holder_name = 'MASKED HOLDER'
+            WHERE true
+        """);
+    }
+    
+    private void maskCredentials(String db) {
+        jdbcTemplate.update("""
+            UPDATE users SET
+                password_hash = '$2a$10$maskedPasswordHashForTesting...'
+            WHERE true
+        """);
+    }
+}
+```
+
+### Testcontainers กับ Production-like Data
+
+```java
+// test/integration/OrderServiceIntegrationTest.java
+@SpringBootTest
+@Testcontainers
+class OrderServiceIntegrationTest {
+    
+    @Container
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15")
+        .withDatabaseName("shophub_test")
+        .withUsername("test")
+        .withPassword("test")
+        .withInitScript("test-data/masked-production-snapshot.sql"); // ใช้ masked snapshot
+    
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+    
+    @Autowired
+    private OrderService orderService;
+    
+    @Test
+    void shouldCreateOrderWithProductionLikeData() {
+        // Test ด้วยข้อมูลที่คล้าย production
+        PlaceOrderCommand command = PlaceOrderCommand.builder()
+            .customerId("user1@masked.example.com") // masked email
+            .items(List.of(new OrderItem("prod-real-id-from-snapshot", 1)))
+            .build();
+        
+        Order order = orderService.placeOrder(command);
+        
+        assertThat(order).isNotNull();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3406: Shift-Left Security Testing ใน CI
+
+"Shift-left" หมายถึงการทำ security testing ตั้งแต่ development phase แทนที่จะรอทำที่ production
+
+### SAST (Static Application Security Testing)
+
+```yaml
+# .github/workflows/security.yml
+name: Security Testing
+
+on: [push, pull_request]
+
+jobs:
+  sast:
+    name: Static Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    # SpotBugs + Find Security Bugs
+    - name: Run SpotBugs Security Analysis
+      run: mvn spotbugs:check -Dspotbugs.plugins=com.h3xstream.findsecbugs:findsecbugs-plugin:1.12.0
+    
+    # OWASP Dependency Check
+    - name: Check Dependencies for Vulnerabilities
+      run: |
+        mvn org.owasp:dependency-check-maven:check \
+          -DfailBuildOnCVSS=7 \
+          -DsuppressionsLocation=.owasp-suppressions.xml
+    
+    # Trivy container scan
+    - name: Scan Docker image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'shophub/api:${{ github.sha }}'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '1'
+    
+    # Secret scanning
+    - name: Detect secrets
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+```
+
+### Security Unit Tests
+
+```java
+// security/SecurityTest.java
+@SpringBootTest
+@AutoConfigureMockMvc
+class SecurityTest {
+    
+    @Autowired
+    private MockMvc mockMvc;
+    
+    @Test
+    @DisplayName("ต้องป้องกัน SQL Injection")
+    void shouldPreventSqlInjection() throws Exception {
+        String maliciousInput = "'; DROP TABLE users; --";
+        
+        mockMvc.perform(get("/api/v1/products/search")
+                .param("q", maliciousInput))
+            .andExpect(status().isOk()) // ต้องไม่ crash
+            .andExpect(jsonPath("$.error").doesNotExist()); // ไม่มี SQL error
+    }
+    
+    @Test
+    @DisplayName("ต้องป้องกัน XSS")
+    void shouldPreventXss() throws Exception {
+        String xssPayload = "<script>alert('XSS')</script>";
+        
+        mockMvc.perform(post("/api/v1/products")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                        "name": "%s",
+                        "price": 100
+                    }
+                    """.formatted(xssPayload))
+                .with(user("admin").roles("ADMIN")))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.name").value(not(containsString("<script>"))));
+    }
+    
+    @Test
+    @DisplayName("ต้องป้องกัน Mass Assignment")
+    void shouldPreventMassAssignment() throws Exception {
+        // User ไม่ควรสามารถตั้งค่า admin=true ได้
+        mockMvc.perform(put("/api/v1/users/me")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                        "name": "Test",
+                        "role": "ADMIN",
+                        "admin": true
+                    }
+                    """)
+                .with(user("regular-user")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.role").value(not("ADMIN")));
+    }
+    
+    @Test
+    @DisplayName("ต้องมี rate limiting")
+    void shouldEnforceRateLimiting() throws Exception {
+        // ส่ง requests เยอะๆ แล้วต้องได้ 429
+        for (int i = 0; i < 100; i++) {
+            mockMvc.perform(post("/api/v1/auth/login")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"email":"test@test.com","password":"wrong"}"""));
+        }
+        
+        // Request สุดท้ายควรได้ 429 Too Many Requests
+        mockMvc.perform(post("/api/v1/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"email":"test@test.com","password":"wrong"}"""))
+            .andExpect(status().isTooManyRequests());
+    }
+    
+    @Test
+    @DisplayName("ต้องป้องกัน IDOR (Insecure Direct Object Reference)")
+    void shouldPreventIdor() throws Exception {
+        // User A ไม่ควรเข้าถึง orders ของ User B
+        String userAToken = getTokenForUser("user-a");
+        String userBOrderId = "order-of-user-b";
+        
+        mockMvc.perform(get("/api/v1/orders/" + userBOrderId)
+                .header("Authorization", "Bearer " + userAToken))
+            .andExpect(status().isForbidden()); // ต้องได้ 403
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3407: Testcontainers Compose สำหรับ Integration Tests
+
+```java
+// test/config/IntegrationTestConfig.java
+@TestConfiguration
+public class IntegrationTestConfig {
+    
+    // Testcontainers Compose - ใช้ docker-compose.test.yml
+    @Container
+    static DockerComposeContainer<?> compose = new DockerComposeContainer<>(
+        new File("docker-compose.test.yml"))
+        .withExposedService("postgres", 5432, 
+            Wait.forListeningPort().withStartupTimeout(Duration.ofMinutes(2)))
+        .withExposedService("redis", 6379, 
+            Wait.forListeningPort())
+        .withExposedService("kafka", 9092, 
+            Wait.forListeningPort());
+    
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", 
+            () -> "jdbc:postgresql://" + 
+                compose.getServiceHost("postgres", 5432) + ":" + 
+                compose.getServicePort("postgres", 5432) + "/shophub");
+        
+        registry.add("spring.redis.host", 
+            () -> compose.getServiceHost("redis", 6379));
+        registry.add("spring.redis.port", 
+            () -> compose.getServicePort("redis", 6379));
+        
+        registry.add("spring.kafka.bootstrap-servers", 
+            () -> compose.getServiceHost("kafka", 9092) + ":" + 
+                compose.getServicePort("kafka", 9092));
+    }
+}
+
+// docker-compose.test.yml
+```
+
+```yaml
+# docker-compose.test.yml
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: shophub
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    ports:
+    - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+    - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    ports:
+    - "9092"
+```
+
+### Full Integration Test
+
+```java
+// test/OrderFlowIntegrationTest.java
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Import(IntegrationTestConfig.class)
+@ActiveProfiles("test")
+class OrderFlowIntegrationTest {
+    
+    @Autowired
+    private TestRestTemplate restTemplate;
+    
+    @Autowired
+    private KafkaConsumerTestHelper kafkaHelper;
+    
+    @Autowired
+    private OrderRepository orderRepository;
+    
+    @Test
+    @DisplayName("Complete order flow: browse → add to cart → checkout → payment → confirmation")
+    void completeOrderFlow() throws InterruptedException {
+        // 1. Browse products
+        ResponseEntity<ProductPage> products = restTemplate.getForEntity(
+            "/api/v1/products?category=electronics", ProductPage.class);
+        assertThat(products.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(products.getBody().getContent()).isNotEmpty();
+        
+        String productId = products.getBody().getContent().get(0).getId();
+        
+        // 2. Login
+        ResponseEntity<AuthResponse> login = restTemplate.postForEntity(
+            "/api/v1/auth/login",
+            new LoginRequest("customer@test.com", "password123"),
+            AuthResponse.class);
+        
+        String token = login.getBody().getAccessToken();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        
+        // 3. Place order
+        PlaceOrderRequest orderRequest = PlaceOrderRequest.builder()
+            .items(List.of(new OrderItemRequest(productId, 1)))
+            .paymentMethodId("pm-test-visa")
+            .shippingAddressId("addr-1")
+            .build();
+        
+        ResponseEntity<Order> orderResponse = restTemplate.exchange(
+            "/api/v1/orders",
+            HttpMethod.POST,
+            new HttpEntity<>(orderRequest, headers),
+            Order.class);
+        
+        assertThat(orderResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String orderId = orderResponse.getBody().getId();
+        
+        // 4. Verify Kafka events
+        kafkaHelper.waitForMessage("order-placed", orderId, Duration.ofSeconds(10));
+        
+        // 5. Verify order in DB
+        Order savedOrder = orderRepository.findById(orderId).orElseThrow();
+        assertThat(savedOrder.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+        
+        // 6. Get order details
+        ResponseEntity<Order> getOrder = restTemplate.exchange(
+            "/api/v1/orders/" + orderId,
+            HttpMethod.GET,
+            new HttpEntity<>(headers),
+            Order.class);
+        
+        assertThat(getOrder.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(getOrder.getBody().getItems()).hasSize(1);
+        assertThat(getOrder.getBody().getItems().get(0).getProductId()).isEqualTo(productId);
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3408-3440: Testing Best Practices Summary
+
+### Test Pyramid
+
+```
+               /\
+              /  \
+             / E2E \      ← น้อย, ช้า, แพง, confidence สูง
+            /--------\
+           / Integration\  ← ปานกลาง
+          /--------------\
+         /  Unit Tests    \  ← เยอะ, เร็ว, ถูก
+        /------------------\
+```
+
+### Testing Checklist
+
+```
+Unit Tests (70%):
+  ✅ Service logic ทุก branch
+  ✅ Domain model invariants
+  ✅ Utility functions
+  ✅ Exception handling
+  ✅ Boundary conditions
+
+Integration Tests (20%):
+  ✅ Repository operations
+  ✅ API endpoints (MockMvc)
+  ✅ Message queue integration
+  ✅ Cache behavior
+  ✅ External service mocking
+
+E2E Tests (10%):
+  ✅ Critical user flows
+  ✅ Cross-service integration
+  ✅ Database seeded with test data
+  ✅ Real browser testing (Playwright)
+
+Special Tests:
+  ✅ Contract tests (Pact)
+  ✅ Performance tests (k6)
+  ✅ Security tests (SAST + DAST)
+  ✅ Chaos tests
+  ✅ Synthetic monitoring
+```
+
+### Test Performance Tips
+
+```java
+// ใช้ @DirtiesContext อย่างระมัดระวัง - ช้ามาก
+// BAD:
+@DirtiesContext // recreates Spring context every test
+class SlowTest { }
+
+// GOOD: ใช้ @Transactional สำหรับ rollback แทน
+@Transactional // rollback after each test
+class FastTest { }
+
+// ใช้ TestEntityManager แทน JpaRepository ใน test
+@DataJpaTest
+class RepositoryTest {
+    @Autowired
+    TestEntityManager entityManager;
+    
+    @Test
+    void shouldFindByEmail() {
+        User user = entityManager.persistAndFlush(new User("test@test.com"));
+        Optional<User> found = userRepository.findByEmail("test@test.com");
+        assertThat(found).isPresent();
+    }
+}
+```
+
+---
+
+## สรุป
+
+Part 95 ครอบคลุม Advanced Testing Strategies:
+
+1. **Chaos Testing** - Chaos Monkey ทดสอบ resilience
+2. **Load Testing CI Gates** - k6 ป้องกัน performance regression
+3. **Contract Testing** - Pact ตรวจสอบ API contracts
+4. **Synthetic Monitoring** - Playwright monitor production
+5. **Production Data** - Masked snapshots สำหรับ realistic tests
+6. **Shift-Left Security** - SAST, dependency check ใน CI
+7. **Testcontainers Compose** - Integration tests ที่สมจริง
+
+Testing ที่ดีคือ safety net ที่ช่วยให้ ship code ได้อย่างมั่นใจ
+
+---
+
+*[← Part 94: Machine Learning](./part-94-machine-learning.md) | [Part 96: Capstone Design →](./part-96-capstone-design.md)*

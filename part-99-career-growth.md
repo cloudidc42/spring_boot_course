@@ -1,862 +1,773 @@
-# Part 99: Career Growth for Spring Boot Developers
+# Part 99: Career Growth สำหรับ Spring Boot Developer
 ## ขั้นตอนที่ 3561-3600
 
-**ระดับ: World-Class Professional**
+**ระดับ:** World-Class (ระดับโลก)
+**เวลาเรียน:** 4-6 ชั่วโมง
+**เป้าหมาย:** เรียนรู้เส้นทางความก้าวหน้าในอาชีพ Spring Boot Developer ตั้งแต่ระดับ Junior ไปถึง Staff/Principal รวมถึงการสร้าง portfolio, Open source contributions, Technical interview prep และ Personal branding
 
 ---
 
-## บทนำ: เส้นทางสู่ความสำเร็จในอาชีพ
+## ขั้นตอนที่ 3561: Career Path สำหรับ Spring Boot Developer ในไทย
 
-การเป็น Spring Boot Developer ที่ยอดเยี่ยมไม่ได้หมายความว่าแค่เขียนโค้ดได้ดี แต่ต้องพัฒนา Skills หลายด้านพร้อมกัน ทั้ง Technical, Leadership, Communication และ Business Understanding
+### ภาพรวมเส้นทางอาชีพ
 
-คู่มือนี้จะแสดงเส้นทางที่ชัดเจนจาก Junior ไปสู่ Principal Engineer
+```
+Junior Backend Developer (0-2 ปี)
+         ↓
+Mid-Level Backend Developer (2-4 ปี)
+         ↓
+Senior Backend Developer (4-7 ปี)
+         ↓
+Staff Engineer / Tech Lead (7-10 ปี)
+         ↓
+Principal Engineer / Engineering Manager (10+ ปี)
+```
+
+### ตลาดงาน Backend Developer ในไทย (2025-2026)
+
+ตลาด IT ในประเทศไทยมีการเติบโตอย่างต่อเนื่อง โดยเฉพาะใน:
+- **Fintech** - ธนาคาร, payment gateways, cryptocurrency exchanges
+- **E-commerce** - marketplace ขนาดใหญ่, logistics platforms
+- **Healthcare IT** - hospital management systems, telemedicine
+- **Government Digital** - โครงการดิจิทัลภาครัฐ
+- **Startups** - tech startups ทั้งไทยและ regional
 
 ---
 
-## ขั้นตอนที่ 3561: Career Path Overview
+## ขั้นตอนที่ 3562: Skills Matrix ตามระดับ
 
-### Junior → Mid → Senior → Staff → Principal
+### Junior Backend Developer (0-2 ปี)
+
+**ทักษะที่ต้องมี:**
 
 ```
-Level 1: Junior Developer (0-2 ปี)
-├── เขียน Code ตาม Spec ที่กำหนด
-├── Fix Bugs ภายใต้การ Guidance
-├── Learn Technology Stack
-└── งานหลัก: Feature Implementation
+Core Java/Kotlin:
+  ✅ OOP concepts (Encapsulation, Inheritance, Polymorphism)
+  ✅ Collections Framework
+  ✅ Exception handling
+  ✅ Basic generics
+  ✅ Java 17+ features (records, sealed classes)
 
-Level 2: Mid-level Developer (2-5 ปี)
-├── ออกแบบและ Implement Features อิสระ
-├── Code Review เพื่อน
-├── Mentor Junior Developers
-└── งานหลัก: Feature Ownership
+Spring Boot Basics:
+  ✅ REST API development (@RestController, @GetMapping, etc.)
+  ✅ Dependency Injection (@Autowired, @Component)
+  ✅ Spring Data JPA (basic CRUD)
+  ✅ Validation (@Valid, @NotNull, etc.)
+  ✅ Configuration (application.yml)
+  ✅ Basic testing (JUnit 5, Mockito)
 
-Level 3: Senior Developer (5-8 ปี)
-├── Technical Leadership สำหรับ Team
-├── System Design Decisions
-├── Cross-team Collaboration
-└── งานหลัก: Technical Strategy
+Database:
+  ✅ SQL basics (SELECT, INSERT, UPDATE, DELETE, JOIN)
+  ✅ PostgreSQL / MySQL
+  ✅ Basic database design
+  ✅ Flyway migrations
 
-Level 4: Staff Engineer (8-12 ปี)
-├── Impact ระดับ Organization
-├── Drive Technical Standards
-├── Mentor Senior Engineers
-└── งานหลัก: Engineering Excellence
+Tools:
+  ✅ Git (commit, push, pull, branch, merge)
+  ✅ Maven/Gradle
+  ✅ IntelliJ IDEA / VSCode
+  ✅ Docker basics (run containers)
 
-Level 5: Principal Engineer (12+ ปี)
-├── Technical Vision ระดับ Company
-├── Industry Influence
-├── Architecture at Scale
-└── งานหลัก: Long-term Technical Direction
+เงินเดือน (Bangkok): 35,000 - 60,000 บาท/เดือน
 ```
 
----
+### Mid-Level Backend Developer (2-4 ปี)
 
-## ขั้นตอนที่ 3562: Skills Matrix
+**ทักษะที่ต้องมี:**
 
-### Junior Developer Skills
+```
+Advanced Spring Boot:
+  ✅ Spring Security (JWT, OAuth2)
+  ✅ Caching (Redis, Caffeine)
+  ✅ Messaging (Kafka, RabbitMQ)
+  ✅ Microservices basics
+  ✅ WebFlux / Reactive programming
+  ✅ Performance optimization
 
-```java
-// Technical Skills ที่ต้องมี:
-Technical Skills:
-├── Java Fundamentals (OOP, Collections, Streams)
-├── Spring Boot Basics (REST API, DI, JPA)
-├── SQL Basics (CRUD, JOINs, Indexes)
-├── Git (commit, push, pull, branch, merge)
-├── Testing (JUnit, Mockito)
-└── Docker Basics
+Testing:
+  ✅ Integration testing (Testcontainers)
+  ✅ API testing (MockMvc, RestAssured)
+  ✅ TDD principles
+  ✅ Test coverage > 80%
 
-// Code ตัวอย่างที่ Junior ต้องทำได้:
-@RestController
-@RequestMapping("/api/v1/users")
-@RequiredArgsConstructor
-public class UserController {
-    
-    private final UserService userService;
-    
-    @GetMapping("/{id}")
-    public ResponseEntity<UserResponse> getUser(@PathVariable UUID id) {
-        return userService.findById(id)
-            .map(user -> ResponseEntity.ok(toResponse(user)))
-            .orElse(ResponseEntity.notFound().build());
-    }
-    
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public UserResponse createUser(@Valid @RequestBody CreateUserRequest request) {
-        return userService.createUser(request);
-    }
-}
+Infrastructure:
+  ✅ Docker Compose
+  ✅ Kubernetes basics (pods, services, deployments)
+  ✅ CI/CD (GitHub Actions, Jenkins)
+  ✅ Cloud basics (AWS / GCP / Azure)
+
+System Design:
+  ✅ Design patterns (GoF)
+  ✅ SOLID principles
+  ✅ API design best practices
+  ✅ Basic distributed systems concepts
+
+เงินเดือน (Bangkok): 65,000 - 100,000 บาท/เดือน
 ```
 
-### Mid-level Developer Skills
+### Senior Backend Developer (4-7 ปี)
 
-```java
-// Technical Skills เพิ่มเติม:
-Technical Skills (Additional):
-├── Microservices Patterns (Circuit Breaker, Saga, CQRS)
-├── Message Brokers (Kafka, RabbitMQ)
-├── Caching Strategies (Redis, Caffeine)
-├── Performance Tuning (Profiling, DB Optimization)
-├── Security (JWT, OAuth2, OWASP)
-├── Container Orchestration (Kubernetes basics)
-├── Monitoring (Prometheus, Grafana)
-└── CI/CD (GitHub Actions, Jenkins)
+**ทักษะที่ต้องมี:**
 
-// ตัวอย่างงานที่ Mid-level ทำ:
-// Design and implement Event-Driven System
-@Service
-@RequiredArgsConstructor
-public class OrderEventProcessor {
-    
-    private final OrderRepository orderRepository;
-    private final InventoryClient inventoryClient;
-    private final PaymentClient paymentClient;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+```
+Architecture:
+  ✅ Microservices architecture
+  ✅ Event-driven architecture
+  ✅ DDD (Domain-Driven Design)
+  ✅ CQRS / Event Sourcing
+  ✅ Saga pattern
+  ✅ API Gateway patterns
 
-    /**
-     * Orchestrate Order Processing ด้วย SAGA Pattern
-     * Handle Compensation Transaction เมื่อเกิด Error
-     */
-    @Transactional
-    public void processOrder(CreateOrderCommand command) {
-        Order order = createOrder(command);
-        
-        try {
-            inventoryClient.reserveStock(order);
-            paymentClient.processPayment(order);
-            order.confirm();
-        } catch (InsufficientStockException e) {
-            order.cancel("Insufficient stock");
-            kafkaTemplate.send("order.cancelled", order.getId().toString(), 
-                new OrderCancelledEvent(order.getId(), "INSUFFICIENT_STOCK"));
-        } catch (PaymentException e) {
-            inventoryClient.releaseStock(order);  // Compensate
-            order.cancel("Payment failed");
-        }
-        
-        orderRepository.save(order);
-    }
-}
+Performance:
+  ✅ JVM tuning (GC, heap)
+  ✅ Query optimization
+  ✅ Load testing (k6, Gatling)
+  ✅ Profiling (async-profiler, JFR)
+  ✅ Distributed tracing (Jaeger, Zipkin)
+
+Production Operations:
+  ✅ Observability (metrics, logs, traces)
+  ✅ Incident response
+  ✅ Capacity planning
+  ✅ Cost optimization
+  ✅ Security hardening
+
+Leadership:
+  ✅ Code review (บอก WHY ไม่ใช่แค่ WHAT)
+  ✅ Technical mentoring
+  ✅ Architecture documentation
+  ✅ Technical debt management
+
+เงินเดือน (Bangkok): 100,000 - 180,000 บาท/เดือน
+เงินเดือน (Remote / สำหรับบริษัทต่างชาติ): $3,000 - $8,000/เดือน
 ```
 
-### Senior Developer Skills
+### Staff Engineer (7-10 ปี)
 
-```java
-// Senior ต้องทำได้ทั้งหมดของ Mid + เพิ่ม:
-Additional Skills:
-├── System Architecture Design
-├── Performance at Scale (10x Traffic)
-├── Cross-cutting Concerns (Observability, Security)
-├── Technical Mentoring
-├── Code Review at Architecture Level
-├── Incident Response
-├── Capacity Planning
-└── Technical Debt Management
+**ทักษะที่ต้องมี:**
 
-// Senior Engineer Design Pattern Example:
-// Design Event-Driven Architecture สำหรับ Order System
+```
+Technical Leadership:
+  ✅ Cross-team technical decisions
+  ✅ Engineering roadmap planning
+  ✅ Build vs Buy decisions
+  ✅ Vendor evaluation
+  ✅ Technical risk assessment
 
-/**
- * Transactional Outbox Pattern
- * ป้องกัน Lost Message เมื่อ Publish Kafka Event
- * 
- * ปัญหา: ถ้า Save to DB สำเร็จ แต่ Kafka publish ล้มเหลว
- * Solution: Save Event ไปใน DB Table (Outbox) แล้วค่อย Publish
- */
-@Entity
-@Table(name = "outbox_events")
-public class OutboxEvent {
-    @Id
-    private UUID id;
-    
-    @Column(name = "aggregate_id")
-    private String aggregateId;
-    
-    @Column(name = "event_type")
-    private String eventType;
-    
-    @Column(name = "payload", columnDefinition = "jsonb")
-    private String payload;
-    
-    @Column(name = "status")
-    @Enumerated(EnumType.STRING)
-    private OutboxEventStatus status = OutboxEventStatus.PENDING;
-    
-    @Column(name = "created_at")
-    private Instant createdAt;
-    
-    @Column(name = "published_at")
-    private Instant publishedAt;
-    
-    @Column(name = "retry_count")
-    private int retryCount = 0;
-}
+Organization Impact:
+  ✅ Define engineering standards
+  ✅ Developer productivity initiatives
+  ✅ Hiring technical assessment design
+  ✅ Onboarding program design
 
-@Service
-@RequiredArgsConstructor
-public class OutboxPublisher {
-    
-    private final OutboxEventRepository outboxRepository;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
-    private final ObjectMapper objectMapper;
-    
-    /**
-     * Polling Publisher - ทำงานทุก 5 วินาที
-     * ส่ง Events ที่ค้างอยู่ใน Outbox
-     */
-    @Scheduled(fixedDelay = 5000)
-    @Transactional
-    public void publishPendingEvents() {
-        List<OutboxEvent> pendingEvents = outboxRepository
-            .findTop100ByStatusOrderByCreatedAtAsc(OutboxEventStatus.PENDING);
-        
-        for (OutboxEvent event : pendingEvents) {
-            try {
-                kafkaTemplate.send(
-                    resolveTopicFor(event.getEventType()),
-                    event.getAggregateId(),
-                    objectMapper.readValue(event.getPayload(), Object.class)
-                ).get(5, TimeUnit.SECONDS);
-                
-                event.setStatus(OutboxEventStatus.PUBLISHED);
-                event.setPublishedAt(Instant.now());
-                
-            } catch (Exception e) {
-                log.error("Failed to publish event {}: {}", event.getId(), e.getMessage());
-                event.setRetryCount(event.getRetryCount() + 1);
-                
-                if (event.getRetryCount() >= 3) {
-                    event.setStatus(OutboxEventStatus.FAILED);
-                    alertService.alert("Outbox event failed after 3 retries: " + event.getId());
-                }
-            }
-        }
-        
-        outboxRepository.saveAll(pendingEvents);
-    }
-}
+Business Acumen:
+  ✅ Understand business metrics
+  ✅ ROI analysis for technical projects
+  ✅ Communicate technical concepts to non-technical stakeholders
+  ✅ Product development partnership
+
+เงินเดือน (Bangkok): 180,000 - 300,000+ บาท/เดือน
+เงินเดือน (Remote / FAANG-adjacent): $8,000 - $15,000+/เดือน
+```
+
+### Principal Engineer (10+ ปี)
+
+**ทักษะที่ต้องมี:**
+
+```
+Vision & Strategy:
+  ✅ Multi-year technical vision
+  ✅ Platform engineering leadership
+  ✅ Industry trend analysis
+  ✅ Research & Innovation direction
+
+External Impact:
+  ✅ Industry conference talks
+  ✅ Technical blog / publications
+  ✅ Open source leadership
+  ✅ Advisory roles
+
+Organization Builder:
+  ✅ Engineering culture definition
+  ✅ Hiring senior engineers
+  ✅ Organizational design
+  ✅ Budget ownership
+
+เงินเดือน: ขึ้นอยู่กับบริษัทและ equity
 ```
 
 ---
 
-## ขั้นตอนที่ 3563: Building a Strong Portfolio
+## ขั้นตอนที่ 3563: Portfolio Projects ที่แสดงความสามารถ
 
-### Portfolio Projects ที่ควรมี
+### Project 1: E-Commerce API (Junior → Mid)
 
-**Project 1: E-Commerce Platform (Showcase Project)**
 ```
-ควรรวม:
-✅ Microservices Architecture (5+ Services)
-✅ Kafka Event Streaming
-✅ JWT Authentication + OAuth2
-✅ Elasticsearch Search
-✅ Redis Caching
-✅ Kubernetes Deployment
-✅ CI/CD Pipeline
-✅ Comprehensive Testing (Unit + Integration + E2E)
-✅ API Documentation (OpenAPI 3.0)
-✅ Monitoring Dashboard (Grafana)
+ShopHub API - สิ่งที่ต้องมีในโปรเจกต์:
+
+✅ Complete CRUD operations
+✅ JWT Authentication
+✅ Product search with filters
+✅ Shopping cart management
+✅ Order processing flow
+✅ Payment integration (Omise/Stripe sandbox)
+✅ Email notifications
+✅ File upload (product images)
+✅ Pagination
+✅ Comprehensive tests (>80% coverage)
+✅ Docker setup
+✅ README ที่ดี
 
 README ควรมี:
-- Architecture Diagram
-- Tech Stack Justification
-- Setup Instructions
-- API Documentation Link
-- Performance Benchmarks
-- Screenshots/Demo
+- What problem does this solve?
+- Architecture diagram
+- How to run locally
+- API documentation (Swagger)
+- Key decisions explained
 ```
 
-**Project 2: Real-time Chat Application**
 ```java
-// WebSocket + Spring Boot
-@Controller
-public class ChatController {
+// ตัวอย่าง README สำหรับ portfolio project
+```
+
+```markdown
+# ShopHub API
+
+E-commerce REST API built with Spring Boot 3.x
+
+## Key Features
+- Product catalog with search and filtering
+- JWT + OAuth2 authentication
+- Shopping cart with Redis
+- Order processing with Stripe payment
+- Real-time notifications via WebSocket
+
+## Architecture
+
+```
+Client → API Gateway → Spring Boot App → PostgreSQL
+                                       → Redis (Cache/Sessions)
+                                       → Kafka (Events)
+```
+
+## How to run
+
+```bash
+docker-compose up -d
+./mvnw spring-boot:run
+```
+
+## Tech decisions
+- **Redis for cart**: Cart data changes frequently and doesn't need ACID guarantees
+- **Kafka for events**: Decouples order processing from notifications
+- **Flyway**: Database migrations tracked in version control
+```
+```
+
+### Project 2: Real-time Chat Service (Mid → Senior)
+
+```
+Chat Service - ต้องแสดง:
+✅ WebSocket / Server-Sent Events
+✅ Horizontal scaling (Sticky sessions / Redis pub-sub)
+✅ Message persistence
+✅ Read receipts
+✅ Online presence tracking
+✅ Rate limiting
+✅ Security (message encryption, auth)
+✅ Load testing results
+✅ Deployment on cloud (AWS/GCP)
+```
+
+### Project 3: Distributed Task Scheduler (Senior → Staff)
+
+```
+Task Scheduler - ต้องแสดง:
+✅ Distributed lock (Redis/ZooKeeper)
+✅ Fault tolerance
+✅ Job retry with backoff
+✅ Dead letter queue
+✅ Monitoring dashboard
+✅ Horizontal scaling
+✅ Performance benchmarks
+✅ Architecture Decision Records (ADRs)
+```
+
+---
+
+## ขั้นตอนที่ 3564: Open Source Contribution Guide
+
+### ทำไมต้อง Contribute?
+
+1. **เรียนรู้จาก experts** - อ่าน code จากคนเก่งๆ ระดับโลก
+2. **Networking** - รู้จักกับ community ทั่วโลก
+3. **Portfolio** - แสดงให้ HR เห็นว่าเขียน code จริง
+4. **Give back** - ตอบแทนชุมชนที่ใช้ tools ฟรี
+
+### เริ่มต้น Contribute อย่างไร?
+
+```
+ขั้นที่ 1: เลือก project ที่ใช้อยู่แล้ว
+  - Spring Boot, Spring Security, Spring Data
+  - Resilience4j, Micrometer
+  - Flyway, Liquibase
+  
+ขั้นที่ 2: เริ่มจากงานง่าย
+  - Fix typos ใน documentation
+  - เพิ่ม Javadoc
+  - Fix "good first issue" tags
+  
+ขั้นที่ 3: Bug fixes
+  - Reproduce reported bugs
+  - Write failing test
+  - Fix bug
+  - Submit PR
+  
+ขั้นที่ 4: New features
+  - Read contribution guidelines
+  - Discuss feature ใน issue ก่อน
+  - Implement + tests
+  - Submit PR พร้อม description ดีๆ
+```
+
+### PR Template ที่ดี
+
+```markdown
+## What does this PR do?
+Fixes #123 - Add support for custom cache key prefix in @Cacheable
+
+## Why is this needed?
+Currently there's no way to prefix cache keys globally, leading to collisions 
+when multiple apps share the same Redis instance.
+
+## How was this tested?
+- Added unit tests in CacheKeyGeneratorTest
+- Added integration tests with embedded Redis
+- Tested manually with Redis Insight
+
+## Breaking changes?
+No - old behavior is preserved. New behavior opt-in via configuration.
+```
+
+### Thai Open Source Projects ที่น่า Contribute
+
+- **NECTEC projects** - โครงการรัฐบาลดิจิทัล
+- **Thai NLP libraries** - ไลบรารีประมวลผลภาษาไทย
+- **Local fintech SDKs** - Omise, Promptpay implementations
+- **Thai holiday/calendar libs** - เพราะไทยมีวันหยุดพิเศษ
+
+---
+
+## ขั้นตอนที่ 3565: Technical Interview Preparation
+
+### Interview Structure ของ Tech Companies ไทย
+
+```
+สำหรับ Mid-Senior level:
+
+Round 1: Phone/Video screening (30 min)
+  - Background & experience
+  - Why this company
+  - Basic technical questions
+
+Round 2: Technical assessment (Take-home, 3-7 days)
+  - Build a small API
+  - หรือ Fix bugs ใน provided code
+
+Round 3: Technical interview (60-90 min)
+  - Live coding
+  - System design
+  - Previous project deep-dive
+
+Round 4: Culture fit / Leadership (30-60 min)
+  - Behavioral questions
+  - Team fit
+```
+
+### Algorithm & Data Structure ที่ต้องรู้
+
+```java
+// 1. Arrays & Strings
+// Q: หา maximum subarray sum (Kadane's Algorithm)
+public int maxSubArray(int[] nums) {
+    int maxSum = nums[0];
+    int currentSum = nums[0];
     
-    @MessageMapping("/chat.send")
-    @SendTo("/topic/messages")
-    public ChatMessage sendMessage(ChatMessage message) {
-        message.setTimestamp(Instant.now());
-        return message;
+    for (int i = 1; i < nums.length; i++) {
+        currentSum = Math.max(nums[i], currentSum + nums[i]);
+        maxSum = Math.max(maxSum, currentSum);
     }
     
-    @MessageMapping("/chat.join")
-    @SendTo("/topic/users")
-    public UserJoinedMessage joinRoom(UserJoinedMessage message) {
-        return message;
-    }
+    return maxSum;
 }
 
-// ควรรวม:
-// - WebSocket/STOMP Protocol
-// - Redis Pub/Sub สำหรับ Scale Horizontally
-// - Message Persistence
-// - User Authentication
-// - Read Receipts
-```
+// 2. HashMap / HashSet
+// Q: หา two numbers ที่บวกกันได้ target (Two Sum)
+public int[] twoSum(int[] nums, int target) {
+    Map<Integer, Integer> seen = new HashMap<>();
+    
+    for (int i = 0; i < nums.length; i++) {
+        int complement = target - nums[i];
+        if (seen.containsKey(complement)) {
+            return new int[]{seen.get(complement), i};
+        }
+        seen.put(nums[i], i);
+    }
+    
+    return new int[]{};
+}
 
-**Project 3: Distributed Task Scheduler**
-```java
-// Custom Scheduler ที่ทำงานใน Cluster
-@Component
-public class DistributedScheduler {
+// 3. Binary Search
+// Q: หา position ของ target ใน sorted array
+public int search(int[] nums, int target) {
+    int left = 0, right = nums.length - 1;
     
-    private final RedisTemplate<String, String> redisTemplate;
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        if (nums[mid] == target) return mid;
+        if (nums[mid] < target) left = mid + 1;
+        else right = mid - 1;
+    }
     
-    /**
-     * ใช้ Redis SETNX เพื่อ Acquire Lock
-     * ป้องกัน Task รันพร้อมกันหลาย Instances
-     */
-    @Scheduled(cron = "0 * * * * *")  // ทุกนาที
-    public void runScheduledTask() {
-        String lockKey = "scheduler:daily-report";
-        String lockValue = UUID.randomUUID().toString();
-        
-        Boolean acquired = redisTemplate.opsForValue()
-            .setIfAbsent(lockKey, lockValue, Duration.ofMinutes(5));
-        
-        if (Boolean.TRUE.equals(acquired)) {
-            try {
-                // Only one instance runs this
-                generateDailyReport();
-            } finally {
-                // Release lock (only if we own it)
-                String currentValue = redisTemplate.opsForValue().get(lockKey);
-                if (lockValue.equals(currentValue)) {
-                    redisTemplate.delete(lockKey);
-                }
+    return -1;
+}
+
+// 4. BFS/DFS
+// Q: Number of islands
+public int numIslands(char[][] grid) {
+    int count = 0;
+    for (int i = 0; i < grid.length; i++) {
+        for (int j = 0; j < grid[0].length; j++) {
+            if (grid[i][j] == '1') {
+                dfs(grid, i, j);
+                count++;
             }
         }
     }
+    return count;
+}
+
+private void dfs(char[][] grid, int i, int j) {
+    if (i < 0 || i >= grid.length || j < 0 || j >= grid[0].length || 
+        grid[i][j] != '1') return;
+    
+    grid[i][j] = '0'; // Mark visited
+    dfs(grid, i+1, j);
+    dfs(grid, i-1, j);
+    dfs(grid, i, j+1);
+    dfs(grid, i, j-1);
 }
 ```
 
----
+### System Design Interview
 
-## ขั้นตอนที่ 3564: Open Source Contributions
+```
+Framework สำหรับตอบ System Design:
 
-### เริ่มต้น Contribute Open Source
+1. Clarify requirements (5 min)
+   - Users: 1M DAU? 100M?
+   - Reads vs Writes ratio
+   - Consistency vs Availability requirements
+   - Latency requirements
 
-**ขั้นตอนการ Contribute:**
+2. Estimate scale (5 min)
+   - QPS calculation
+   - Storage calculation
+   - Bandwidth calculation
 
-```bash
-# Step 1: Find Good First Issues
-# ใน GitHub ค้นหา: label:"good first issue" language:java spring-boot
+3. High-level design (10 min)
+   - Draw main components
+   - Data flow
+   - API design
 
-# Step 2: Fork and Clone
-git clone https://github.com/YOUR_USERNAME/spring-boot.git
-cd spring-boot
-git remote add upstream https://github.com/spring-projects/spring-boot.git
+4. Deep dive (20 min)
+   - Database schema
+   - Scaling strategy
+   - Caching strategy
+   - Handle edge cases
 
-# Step 3: Create Branch
-git checkout -b fix/issue-12345-describe-fix
-
-# Step 4: Make Changes
-# Code, Test, Document
-
-# Step 5: Commit with Good Message
-git commit -m "Fix: Resolve NPE in DataSourceAutoConfiguration
-
-When spring.datasource.url is not set and no DataSource bean exists,
-DataSourceAutoConfiguration throws NullPointerException.
-This fix adds a null check before attempting to create DataSource.
-
-Fixes: #12345"
-
-# Step 6: Push and Create PR
-git push origin fix/issue-12345-describe-fix
+5. Trade-offs (5 min)
+   - What would you do differently?
+   - Known limitations?
 ```
 
-**Projects ที่เหมาะสำหรับ Contribution:**
-- Spring Boot (spring-projects/spring-boot)
-- Spring Security
-- Spring Data
-- Testcontainers
-- Micrometer
+```
+ตัวอย่าง: Design URL Shortener
+
+Requirements:
+- 100M URLs/day shortened
+- 10B reads/day
+- Shortened URL ใช้ได้ 5 ปี
+- High availability
+
+Scale estimation:
+- Writes: 100M/day ≈ 1,160 QPS
+- Reads: 10B/day ≈ 115,740 QPS (100x write)
+- Storage: 100M × 365 × 5 years × 500 bytes ≈ 91 TB
+
+Key decisions:
+1. Base62 encoding สำหรับ short URL (a-z, A-Z, 0-9)
+2. NoSQL (Cassandra) สำหรับ key-value storage
+3. CDN + Cache สำหรับ read-heavy workload
+4. Consistent hashing สำหรับ distributed ID generation
+```
+
+### Behavioral Questions (STAR Format)
+
+```
+S - Situation: ภาพรวมของสถานการณ์
+T - Task: หน้าที่ที่ต้องรับผิดชอบ
+A - Action: สิ่งที่คุณทำ
+R - Result: ผลลัพธ์ที่เกิดขึ้น
+
+ตัวอย่างคำถาม:
+Q: "เล่าถึงครั้งที่คุณต้องแก้ production bug ที่ critical"
+
+A: "S - ตอนที่ผมทำงานที่ X ระบบ payment เกิด timeout สูง
+    T - ผมรับผิดชอบหาสาเหตุและแก้ไขใน 2 ชั่วโมง
+    A - ดู Grafana เจอ DB query เพิ่ม 50x ขึ้นมา, ตรวจ slow query log
+        เจอ missing index, เพิ่ม index แบบ CONCURRENTLY
+    R - Timeout ลดจาก 10% เป็น 0.1% ภายใน 5 นาที"
+```
 
 ---
 
-## ขั้นตอนที่ 3565: Technical Writing and Blogging
+## ขั้นตอนที่ 3566: Personal Brand Building
 
-### สร้าง Technical Blog
+### Blog Writing
 
-**Platform ที่แนะนำ:**
-- Medium (สำหรับ Reach)
-- Dev.to (สำหรับ Developer Community)
-- Hashnode (สำหรับ Custom Domain)
-- GitHub Pages (สำหรับ Control)
+**แพลตฟอร์มที่เหมาะสม:**
+- **Medium** - เข้าถึง audience กว้างขึ้น (English preferred)
+- **Dev.to** - developer community
+- **GitHub Pages** - professional, free
+- **Hashnode** - ดีสำหรับ tech content
 
-**Topics ที่ได้รับความสนใจสูง:**
+**หัวข้อที่ควรเขียน:**
+```
+เบื้องต้น (ดึง traffic ดี):
+- "Spring Boot + Redis: Complete Guide"
+- "JWT Authentication in Spring Boot 3"
+- "Top 10 Spring Boot Annotations"
+
+ขั้นกลาง:
+- "How I reduced API latency by 80%"
+- "Debugging memory leak in Spring Boot"
+- "Microservices: Lessons from production"
+
+ขั้นสูง:
+- "Implementing CQRS with Spring Boot and Kafka"
+- "Zero-downtime deployment strategies"
+- "Building a Feature Store with Redis"
+```
+
+### GitHub Profile Optimization
 
 ```markdown
-# บทความที่ควรเขียน:
+# README.md สำหรับ GitHub Profile (username/username)
 
-1. "How I Reduced Response Time by 90% with Redis Caching"
-   - เล่าประสบการณ์จริง
-   - Include Metrics (Before/After)
-   - Code Examples
+### Hi there! สวัสดีครับ 👋
 
-2. "Building Event-Driven Microservices with Kafka"
-   - Architecture Diagram
-   - Working Code
-   - Lessons Learned
+I'm a **Senior Backend Developer** specializing in Spring Boot and cloud-native systems.
 
-3. "Spring Boot Security Deep Dive: JWT, OAuth2, and Rate Limiting"
-   - Practical Examples
-   - Security Best Practices
-   - Common Mistakes
+**Currently working on:** Building scalable e-commerce platforms
 
-4. "From Monolith to Microservices: A Real Journey"
-   - Timeline และ Milestones
-   - Challenges Faced
-   - What I Would Do Differently
+**Tech stack:**
+- 🍃 Spring Boot 3.x
+- ☕ Java 21 / Kotlin
+- 🐘 PostgreSQL
+- 🔴 Redis
+- ☁️ AWS
+
+**Notable projects:**
+- 🛒 [ShopHub API](link) - E-commerce platform handling 1M+ requests/day
+- 🤖 [ML Feature Store](link) - Real-time feature computation with <5ms latency
+- 📊 [Monitoring Dashboard](link) - Prometheus + Grafana setup
+
+**Find me:**
+- 📝 Blog: medium.com/@yourname
+- 💼 LinkedIn: linkedin.com/in/yourname
+- 🐦 Twitter: @yourname
 ```
 
-**Template สำหรับเขียน Technical Blog:**
-
-```markdown
-# [Title: Specific Problem You Solved]
-
-## TL;DR
-[2-3 ประโยคสรุป ผู้อ่านไม่ต้องอ่านทั้งหมดเพื่อเข้าใจ Gist]
-
-## The Problem
-[อธิบายปัญหาที่ชัดเจน พร้อม Context]
-
-## Why This Matters
-[บอกว่าทำไม Reader ถึงควรสนใจ]
-
-## The Solution
-[อธิบาย Solution พร้อม Code Examples]
-
-## Results
-[Metrics, Performance Numbers, ผลลัพธ์ที่วัดได้]
-
-## What I Learned
-[Lessons Learned, Pitfalls ที่เจอ]
-
-## References
-[Links to documentation, papers, other articles]
-```
-
----
-
-## ขั้นตอนที่ 3566: Building Expertise and Personal Brand
-
-### Becoming a Recognized Expert
-
-**Strategy 1: Conference Speaking**
-```
-Start Small:
-1. Internal Tech Talks ใน Company
-2. Local Meetups (Bangkok JUG, etc.)
-3. Regional Conferences (FOSSASIA, etc.)
-4. International Conferences (JavaOne, SpringOne)
-
-Tips for Good Talks:
-- เลือกหัวข้อที่มีประสบการณ์จริง
-- มี Demo ที่ Working
-- Story-driven presentation
-- Takeaways ที่ Practical
-```
-
-**Strategy 2: Teaching and Mentoring**
-```java
-// สร้าง Open Source Learning Resources
-// ตัวอย่าง: Spring Boot Tutorial Repository
-
-/**
- * Repository Structure สำหรับ Teaching:
- * 
- * spring-boot-examples/
- * ├── 01-rest-api/
- * │   ├── src/
- * │   ├── README.md  (คำอธิบายภาษาไทย)
- * │   └── DIAGRAM.png
- * ├── 02-database-jpa/
- * ├── 03-security-jwt/
- * └── 04-microservices/
- * 
- * แต่ละ Module ต้องมี:
- * - Working Code
- * - Tests
- * - Step-by-step README
- * - Exercises for Practice
- */
-```
-
-**Strategy 3: Building GitHub Profile**
-```markdown
-# GitHub Profile Tips
-
-## ✅ ต้องมี:
-- Profile README.md ที่น่าสนใจ
-- Pin 4-6 โปรเจกต์ที่ดีที่สุด
-- Consistent Commit History (GitHub Contribution Graph)
-- Good README ทุก Repository
-- Open Source Contributions
-
-## 📊 GitHub Profile Template:
-
-# Hi, I'm [Your Name] 👋
-
-🔭 Currently working on: E-Commerce Platform with Spring Boot
-🌱 Learning: GraalVM Native Image, Reactive Programming
-💬 Ask me about: Spring Boot, Microservices, System Design
-📝 I write about: [Blog Link]
-
-## Tech Stack
-- Java 21, Spring Boot 3.x
-- Kubernetes, Docker, Kafka
-- PostgreSQL, Redis, Elasticsearch
-
-## Latest Blog Posts
-<!-- BLOG-POST-LIST:START -->
-<!-- BLOG-POST-LIST:END -->
-```
-
----
-
-## ขั้นตอนที่ 3567: Salary Negotiation and Career Progression
-
-### Understanding Compensation
+### Conference Talks
 
 ```
-ระดับ Compensation ในไทย (2024):
+เริ่มต้นพูดที่ events ใหญ่ขึ้น:
 
-Junior Developer (0-2 ปี):
-- Bangkok: 30,000 - 50,000 THB/month
-- Startup: +15-20% Stock Options
-
-Mid-level Developer (2-5 ปี):
-- Bangkok: 50,000 - 90,000 THB/month
-- Senior Product Companies: Higher
-
-Senior Developer (5-8 ปี):
-- Bangkok: 90,000 - 150,000 THB/month
-- Tech Companies: 150,000+
-
-Staff/Principal Engineer (8+ ปี):
-- Bangkok: 150,000 - 300,000+ THB/month
-- FAANG/Remote: USD equivalents
-
-Remote (US/EU Companies):
-- Mid-level: $80,000 - $120,000/year
-- Senior: $120,000 - $200,000/year
-- Staff/Principal: $200,000 - $400,000+/year
-```
-
-### Salary Negotiation Tips
-
-```
-1. Research Market Rate
-   - Glassdoor, Levels.fyi, LinkedIn Salary
-   - Network กับเพื่อน Developer
-
-2. Quantify Your Impact
-   "ผมลด Response Time ลง 90% ทำให้ลด Infrastructure Cost 30%"
-   "ผม Implement CI/CD ที่ลด Deployment Time จาก 2 ชั่วโมง เป็น 5 นาที"
-
-3. Know Your BATNA
-   (Best Alternative to Negotiated Agreement)
-   - มี Competing Offers ยิ่งดี
-   - รู้ว่าตัวเองมีค่าเท่าไร
-
-4. Negotiate Total Compensation
-   - Base Salary
-   - Bonus
-   - Stock Options/RSU
-   - Benefits (Health, Learning Budget)
-   - Remote Work Flexibility
-   - Conference Budget
-```
-
----
-
-## ขั้นตอนที่ 3568: Continuous Learning Strategy
-
-### Learning Roadmap 2024-2025
-
-```
-Q1 2025: Virtual Threads & Project Loom
-├── Java 21 Virtual Threads
-├── Spring Boot + Virtual Threads
-├── Benchmark vs Traditional Threads
-└── When to use Virtual Threads
-
-Q2 2025: GraalVM Native Image
-├── Compile Spring Boot to Native
-├── Performance Comparison
-├── Limitations and Workarounds
-└── Deployment Optimization
-
-Q3 2025: AI Integration
-├── Spring AI Framework
-├── RAG (Retrieval Augmented Generation)
-├── LLM Integration Patterns
-└── Vector Databases (Pgvector, Weaviate)
-
-Q4 2025: Platform Engineering
-├── Internal Developer Platform
-├── Golden Path Templates
-├── Developer Experience
-└── SRE Practices
-```
-
-**Learning Resources ที่แนะนำ:**
-
-```java
-// Books
-1. "Designing Data-Intensive Applications" - Martin Kleppmann
-   // ดีที่สุดสำหรับ System Design
-
-2. "Clean Architecture" - Robert C. Martin
-   // DDD และ Architecture Patterns
-
-3. "Building Microservices" - Sam Newman
-   // Microservices Best Practices
-
-4. "Release It!" - Michael Nygard
-   // Production-ready Patterns
-
-5. "Accelerate" - Nicole Forsgren
-   // DevOps และ Engineering Effectiveness
-
-// Online Courses
-1. Spring Academy (Official) - spring.academy
-2. Udemy: Spring Boot Microservices
-3. Pluralsight: Advanced Spring
-4. Coursera: Cloud Architecture
-
-// Communities
-1. Spring Community Forum
-2. r/SpringBoot (Reddit)
-3. Stack Overflow - [spring-boot] tag
-4. Baeldung.com - Best Spring Boot Blog
-5. Thai Java Community - Facebook Groups
-```
-
----
-
-## ขั้นตอนที่ 3569: Work-Life Balance as a Developer
-
-### Preventing Burnout
-
-```
-Signs of Burnout:
-- รู้สึกเบื่อหน่ายกับ Code ที่เคยสนุก
-- ประสิทธิภาพการทำงานลดลง
-- รู้สึก Cynical กับ Team/Company
-- ไม่อยากเรียนรู้สิ่งใหม่
-
-Prevention Strategies:
-
-1. Time Management
-   - ใช้ Pomodoro Technique (25 min work, 5 min break)
-   - Set Clear Working Hours
-   - Disconnect after Work
-
-2. Continuous Learning without Overwhelm
-   - เรียนรู้ 1 topic ต่อ Month
-   - Apply ใน Side Project หรือ Work
-   - ไม่ต้องรู้ทุกอย่างพร้อมกัน
-
-3. Physical Health
-   - Exercise สม่ำเสมอ
-   - Ergonomic Workspace
-   - Eye Care (20-20-20 rule)
-
-4. Mental Health
-   - Celebrate small wins
-   - Seek mentorship
-   - Connect with community
-```
-
----
-
-## ขั้นตอนที่ 3570: Leadership Transition
-
-### From IC to Tech Lead
-
-```java
-// ความแตกต่างของ Individual Contributor vs Tech Lead
-
-// Individual Contributor Focus:
-public class IndividualContributor {
-    
-    void dailyWork() {
-        writeCode();          // 80% of time
-        codeReview();         // 10% of time
-        meetings();           // 10% of time
-    }
-}
-
-// Tech Lead Focus:
-public class TechLead {
-    
-    void dailyWork() {
-        architecture();       // 30% of time  
-        mentoring();          // 20% of time
-        codeReview();         // 20% of time
-        meetings();           // 20% of time
-        writeCode();          // 10% of time  // ลดลงมาก!
-    }
-    
-    // Tech Lead Responsibilities:
-    void responsibilities() {
-        defineArchitecture();
-        ensureCodeQuality();
-        removeBlockers();
-        manageTeamDebt();
-        communicateWithStakeholders();
-        planTechnicalRoadmap();
-        hiringInterviews();
-    }
-}
-```
-
-### How to Lead Without Authority
-
-```
-1. Build Trust ก่อน
-   - Deliver on promises
-   - Be transparent about mistakes
-   - Advocate for your team
-
-2. Be a Multiplier
-   - Help others succeed
-   - Share knowledge freely
-   - Give credit generously
-
-3. Communicate Technical Decisions
-   - Write Architecture Decision Records (ADRs)
-   - Make trade-offs explicit
-   - Involve team in decisions
-
-4. Manage Technical Debt Proactively
-   - Track debt openly
-   - Allocate time each sprint
-   - Prevent new debt with code standards
-```
-
-```java
-// Architecture Decision Record (ADR) Template
-/**
- * ADR-0042: Use Kafka instead of RabbitMQ for Event Streaming
- * 
- * Status: Accepted
- * Date: 2024-01-15
- * Deciders: @john-doe, @jane-smith, @bob-jones
- * 
- * Context:
- * We need a message broker for our new Event-Driven Architecture.
- * Current options: RabbitMQ, Kafka, AWS SQS
- * 
- * Decision:
- * Use Apache Kafka
- * 
- * Rationale:
- * - Need message replay capability for Event Sourcing
- * - Expect 1M+ events/day (Kafka scales better)
- * - Team has existing Kafka experience
- * - Better ecosystem with Spring Cloud Stream
- * 
- * Consequences:
- * - More complex operational overhead
- * - Need to manage Kafka cluster (or use Confluent Cloud)
- * - Learning curve for developers unfamiliar with Kafka
- * 
- * Alternatives Considered:
- * - RabbitMQ: Better for request-reply, but no replay
- * - AWS SQS: Managed, but vendor lock-in
- */
-```
-
----
-
-## ขั้นตอนที่ 3571: The 10x Developer Myth vs Reality
-
-### What Makes a Great Developer
-
-```
-Myth: "10x Developer" ที่ Code เร็ว 10 เท่า
-
-Reality: Developer ที่ยอดเยี่ยมคือ:
-
-1. Force Multiplier
-   - Help team members become more effective
-   - Remove blockers
-   - Share knowledge
+1. Internal company talks
+   - Lunch & Learn
+   - Tech brown bag sessions
    
-2. Right First Time
-   - Design well before coding
-   - High test coverage reduces bugs
-   - Clear code reduces maintenance time
+2. Local meetups
+   - Bangkok JVM User Group
+   - Spring Thai Developers
+   - Docker/Kubernetes Thailand
    
-3. Business-Aware
-   - Understand "why" not just "how"
-   - Prioritize high-value work
-   - Deliver incrementally
-   
-4. Great Communicator
-   - Write clear documentation
-   - Explain complex things simply
-   - Listen actively in meetings
-   
-5. Continuous Improver
-   - Retrospectives
-   - Post-mortems
-   - Experiment and learn
-```
+3. Local conferences
+   - BarCamp Bangkok
+   - CODE Bangkok
+   - Devsummit Thailand
 
-```java
-// Practical Habits ของ Great Developer
-
-// Habit 1: Leave Code Better Than You Found It
-// ทุกครั้งที่แตะไฟล์ ปรับปรุงอย่างน้อย 1 อย่าง
-public void refactorAsYouGo() {
-    // Rename unclear variable
-    // Add missing Javadoc
-    // Extract long method
-    // Add test for uncovered code path
-}
-
-// Habit 2: Write for the Next Developer
-/**
- * Calculates total price including tax and discounts.
- * 
- * Note: discounts are applied BEFORE tax calculation.
- * This is intentional per business requirement PRD-2023-45.
- * 
- * @param items List of order items
- * @param discountPercent discount as percentage (0-100)
- * @param taxRate tax rate as decimal (e.g., 0.07 for 7%)
- * @return total amount with tax and discounts applied
- */
-public BigDecimal calculateTotal(List<OrderItem> items, 
-                                  int discountPercent, 
-                                  BigDecimal taxRate) {
-    BigDecimal subtotal = calculateSubtotal(items);
-    BigDecimal afterDiscount = applyDiscount(subtotal, discountPercent);
-    return applyTax(afterDiscount, taxRate);
-}
+4. International conferences
+   - SpringOne
+   - JavaOne / JConf
+   - KubeCon
 ```
 
 ---
 
-## สรุป Part 99
+## ขั้นตอนที่ 3567: Salary Negotiation ในตลาดไทย
 
-เส้นทาง Career Growth สำหรับ Spring Boot Developer:
+### เข้าใจตลาดแรงงาน
 
-1. **Skills Matrix** - รู้ว่าต้องพัฒนาอะไรในแต่ละ Level
-2. **Portfolio** - Projects ที่แสดงถึง Best Work
-3. **Open Source** - Contribute กลับให้ Community
-4. **Technical Writing** - แชร์ความรู้ สร้าง Authority
-5. **Personal Brand** - GitHub, Blog, Speaking
-6. **Leadership** - Transition จาก IC สู่ Tech Lead
-7. **Continuous Learning** - Stay relevant
+```
+แหล่งข้อมูลเงินเดือน:
+- Salary.com Thailand
+- JobsDB Salary Report
+- LinkedIn Salary Insights
+- Glassdoor (สำหรับบริษัทใหญ่)
+- DevSalary.io (สำหรับ developers)
 
-**จำไว้ว่า:** Career Growth ไม่ใช่ Linear Path ทุกคนมีเส้นทางของตัวเอง สิ่งสำคัญคือ Keep Learning, Keep Growing
+ปัจจัยที่มีผลต่อเงินเดือน:
+1. บริษัท type (MNC > Local Tech > Traditional)
+2. ที่ตั้ง (Bangkok > other provinces)
+3. Industry (Fintech > E-commerce > Consulting)
+4. Team size และ impact
+5. Tech stack (Kotlin/Go/Rust premium)
+6. English proficiency (สำคัญมากสำหรับ remote)
+7. Specialized skills (ML, Security, Performance)
+```
+
+### Negotiation Framework
+
+```
+ขั้นตอนการ negotiate:
+
+1. ค้นคว้าตลาดก่อน (Market research)
+   - รู้ range ของ position นั้น
+   - รู้ว่าบริษัท X จ่ายเท่าไหร่
+   
+2. รู้ค่าของตัวเอง (Know your worth)
+   - Portfolio projects
+   - Past impact (ลด latency เท่าไหร่? save cost เท่าไหร่?)
+   - Certifications (AWS, GCP, etc.)
+   
+3. สูตรการ negotiate
+   เริ่มที่ตัวเลขสูงกว่าที่ต้องการ 20-30%
+   ถ้าถาม salary expectation: บอก range
+   "Based on my research and experience, I'm looking for 120,000 - 140,000 THB"
+   
+4. ไม่ใช่แค่ base salary
+   - Annual bonus (target vs guarantee)
+   - Stock options / ESOP
+   - Remote work allowance
+   - Training budget (30,000 THB/year for courses/conferences)
+   - Health insurance (family coverage)
+   - Laptop/Equipment allowance
+   - Flexible working hours
+   
+5. Counter offer script
+   "ขอบคุณสำหรับ offer นี้ครับ ผมสนใจตำแหน่งนี้มาก
+   Based on my research และ experience ที่ผมมี ผมคาดหวัง X บาท
+   เราสามารถ discuss เรื่องนี้ได้ไหมครับ?"
+```
+
+### การเจรจาสำหรับ Remote Jobs
+
+```
+สำหรับ Remote jobs กับ บริษัทต่างชาติ:
+
+เงินเดือนมาตรฐาน (USD, per month):
+- Junior: $1,500 - $3,000
+- Mid: $3,000 - $6,000
+- Senior: $6,000 - $12,000
+- Staff: $12,000 - $20,000+
+
+Tips:
+- อ่าน Glassdoor สำหรับ US/EU market rates
+- ใช้ Numbeo เปรียบเทียบ cost of living
+- Negotiate สำหรับ Thai market ก่อน แล้วค่อย push ขึ้น
+- Total compensation = salary + equity + bonus
+```
 
 ---
 
-*[← Part 98: Interview Preparation](./part-98-interview-prep.md) | [Part 100: What's Next →](./part-100-whats-next.md)*
+## ขั้นตอนที่ 3568-3600: Learning Roadmap
+
+### 90-Day Career Acceleration Plan
+
+**วันที่ 1-30: Strengthen Foundation**
+```
+สัปดาห์ 1-2:
+  □ ทำ code review checklist
+  □ อ่าน "Clean Code" (Robert C. Martin)
+  □ เพิ่ม test coverage ของ project ปัจจุบัน > 80%
+
+สัปดาห์ 3-4:
+  □ เรียน AWS fundamentals (free tier)
+  □ Deploy application ขึ้น cloud
+  □ สร้าง GitHub profile ที่สวยงาม
+```
+
+**วันที่ 31-60: Build and Share**
+```
+สัปดาห์ 5-6:
+  □ เขียน blog post แรก (technical tutorial)
+  □ Contribute ไป open source project (แม้แต่ docs)
+  □ ฝึก system design (1 question/week)
+
+สัปดาห์ 7-8:
+  □ เพิ่ม portfolio project ที่โชว์ความสามารถ
+  □ ขอ LinkedIn recommendations จาก colleagues
+  □ Update LinkedIn profile ให้ครบ
+```
+
+**วันที่ 61-90: Visibility and Opportunities**
+```
+สัปดาห์ 9-10:
+  □ พูดใน internal tech talk
+  □ สมัคร local meetup พูด
+  □ เพิ่ม 10 connections ต่อสัปดาห์ใน LinkedIn
+
+สัปดาห์ 11-12:
+  □ Practice mock interviews (Pramp, Interviewing.io)
+  □ Apply สำหรับ jobs ที่สนใจ
+  □ ขอ raise/promotion ถ้าถึงเวลา
+```
+
+### Certifications ที่ Worth It
+
+```
+ROI สูงมาก:
+  ✅ AWS Certified Developer (Associate) - ช่วยได้มาก
+  ✅ Kubernetes CKA - ถ้าทำงาน infra-heavy
+  ✅ Spring Professional Certification - สำหรับ Java shops
+
+Worth doing:
+  ✅ AWS Solutions Architect Associate
+  ✅ Google Cloud Professional Developer
+  ✅ HashiCorp Terraform Associate
+
+Overkill สำหรับ most:
+  ❌ AWS Certified DevOps Professional (ถ้าไม่ได้ทำงาน DevOps)
+  ❌ Multiple cloud certs (เลือกแค่ 1 cloud)
+```
+
+---
+
+## สรุป
+
+Part 99 ให้ roadmap สำหรับ career growth:
+
+1. **Skills Matrix** - รู้ว่าต้องพัฒนาอะไรในแต่ละระดับ
+2. **Portfolio Projects** - สร้างตัวอย่างที่แสดงความสามารถจริง
+3. **Open Source** - เรียนรู้และสร้าง reputation
+4. **Interview Prep** - Algorithms + System Design + Behavioral
+5. **Personal Brand** - Blog, GitHub, Talks
+6. **Salary Negotiation** - รู้ค่าตัวเอง, research ตลาด
+
+**จำไว้:** Career growth ไม่ใช่ race - มันคือ marathon ทำอย่างสม่ำเสมอดีกว่า burst แล้วหยุด
+
+---
+
+*[← Part 98: Interview Prep](./part-98-interview-prep.md) | [Part 100: What's Next →](./part-100-whats-next.md)*
