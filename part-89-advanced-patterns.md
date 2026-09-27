@@ -1,620 +1,763 @@
-# Part 89: Advanced Patterns
+# Part 89: Advanced Design Patterns in Spring Boot
 ## ขั้นตอนที่ 3161-3200
 
-**ระดับ:** ระดับโลก (World-Class)
-**เวลาเรียน:** 6-8 ชั่วโมง
-**เป้าหมาย:** เรียนรู้ Design Patterns ขั้นสูงกับ Spring Framework ทั้ง Template Method, Strategy, Observer, Decorator, Factory, Composite และ Command patterns
+**ระดับ:** World-Class (ระดับโลก)
+**เวลาเรียน:** 8-10 ชั่วโมง
+**เป้าหมาย:** เรียนรู้ Design Patterns ขั้นสูงที่ใช้ใน Spring Boot ระดับ production ได้แก่ Template Method, Strategy, Observer/Event, Decorator, Factory, Command และ Composite patterns พร้อม implementation จริงด้วย Spring features
 
 ---
 
-## ขั้นตอนที่ 3161: Template Method Pattern กับ Spring
+## ขั้นตอนที่ 3161: Template Method Pattern กับ Abstract Spring Services
 
-Template Method Pattern กำหนด skeleton ของ algorithm ใน base class และให้ subclasses override ขั้นตอนเฉพาะ
+Template Method Pattern คือ pattern ที่กำหนดโครงร่าง (skeleton) ของ algorithm ใน base class และให้ subclass override บางขั้นตอนได้ ใน Spring Boot เราใช้ abstract class เป็น base service
 
-```java
-// template/DataExportTemplate.java
-package com.example.patterns.template;
+### ทำไมต้องใช้ Template Method?
 
-import lombok.extern.slf4j.Slf4j;
-import java.util.List;
-import java.util.Map;
+เมื่อมี workflow ที่มีขั้นตอนคล้ายกันหลายแบบ เช่น:
+- การ process คำสั่งซื้อ (Order Processing)
+- การ export report ในหลายรูปแบบ (PDF, Excel, CSV)
+- การ validate ข้อมูลแบบต่างๆ
 
-@Slf4j
-public abstract class DataExportTemplate<T> {
-
-    // Template method - กำหนดขั้นตอนทั้งหมด
-    public final ExportResult export(ExportRequest request) {
-        log.info("Starting export: {}", request.getExportId());
-        
-        // 1. Validate request
-        validateRequest(request);
-        
-        // 2. ดึงข้อมูล
-        List<T> data = fetchData(request);
-        log.info("Fetched {} records", data.size());
-        
-        // 3. Transform ข้อมูล
-        List<Map<String, Object>> transformedData = transformData(data, request);
-        
-        // 4. Apply business rules (optional - default no-op)
-        transformedData = applyBusinessRules(transformedData, request);
-        
-        // 5. Format ตาม type
-        byte[] formattedData = formatData(transformedData, request);
-        
-        // 6. ส่งออก
-        String destination = deliverData(formattedData, request);
-        
-        // 7. บันทึก audit log
-        logExport(request, data.size(), destination);
-        
-        return ExportResult.builder()
-            .exportId(request.getExportId())
-            .recordCount(data.size())
-            .destination(destination)
-            .status("SUCCESS")
-            .build();
-    }
-
-    // Abstract methods - subclasses ต้อง implement
-    protected abstract void validateRequest(ExportRequest request);
-    protected abstract List<T> fetchData(ExportRequest request);
-    protected abstract List<Map<String, Object>> transformData(
-        List<T> data, ExportRequest request);
-    protected abstract byte[] formatData(
-        List<Map<String, Object>> data, ExportRequest request);
-
-    // Hook methods - subclasses อาจ override หรือไม่ก็ได้
-    protected List<Map<String, Object>> applyBusinessRules(
-            List<Map<String, Object>> data, ExportRequest request) {
-        return data; // default: ไม่เปลี่ยนแปลง
-    }
-
-    protected String deliverData(byte[] data, ExportRequest request) {
-        // default: บันทึกลงไฟล์
-        String filename = "export_" + request.getExportId() + getFileExtension();
-        log.info("Saving to file: {}", filename);
-        return filename;
-    }
-
-    protected void logExport(ExportRequest request, int count, String destination) {
-        log.info("Export completed: id={}, records={}, destination={}",
-            request.getExportId(), count, destination);
-    }
-
-    protected abstract String getFileExtension();
-}
-```
+### Implementation: Order Processing Template
 
 ```java
-// template/CsvOrderExport.java
-package com.example.patterns.template;
+// domain/order/OrderProcessingTemplate.java
+package com.example.shophub.domain.order;
 
-import com.example.patterns.model.Order;
-import com.example.patterns.repository.OrderRepository;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.*;
-import java.util.stream.Collectors;
-
-@Component
-@RequiredArgsConstructor
-public class CsvOrderExport extends DataExportTemplate<Order> {
-
-    private final OrderRepository orderRepository;
-
-    @Override
-    protected void validateRequest(ExportRequest request) {
-        if (request.getDateFrom() == null || request.getDateTo() == null) {
-            throw new IllegalArgumentException("Date range required for order export");
-        }
-        if (request.getDateTo().isBefore(request.getDateFrom())) {
-            throw new IllegalArgumentException("DateTo must be after DateFrom");
-        }
-    }
-
-    @Override
-    protected List<Order> fetchData(ExportRequest request) {
-        return orderRepository.findByCreatedAtBetween(
-            request.getDateFrom(), request.getDateTo());
-    }
-
-    @Override
-    protected List<Map<String, Object>> transformData(
-            List<Order> orders, ExportRequest request) {
-        return orders.stream().map(order -> {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("Order ID", order.getOrderId());
-            row.put("Customer", order.getCustomerId());
-            row.put("Amount", order.getAmount());
-            row.put("Status", order.getStatus());
-            row.put("Date", order.getCreatedAt());
-            return row;
-        }).collect(Collectors.toList());
-    }
-
-    @Override
-    protected List<Map<String, Object>> applyBusinessRules(
-            List<Map<String, Object>> data, ExportRequest request) {
-        // กรองเฉพาะ completed orders ถ้า request ต้องการ
-        if (Boolean.TRUE.equals(request.getCompletedOnly())) {
-            return data.stream()
-                .filter(row -> "COMPLETED".equals(row.get("Status")))
-                .collect(Collectors.toList());
-        }
-        return data;
-    }
-
-    @Override
-    protected byte[] formatData(List<Map<String, Object>> data, ExportRequest request) {
-        StringBuilder csv = new StringBuilder();
-        if (!data.isEmpty()) {
-            // Header
-            csv.append(String.join(",", data.get(0).keySet())).append("\n");
-            // Rows
-            for (Map<String, Object> row : data) {
-                csv.append(row.values().stream()
-                    .map(v -> "\"" + v + "\"")
-                    .collect(Collectors.joining(","))).append("\n");
+/**
+ * Abstract Template สำหรับการประมวลผลคำสั่งซื้อ
+ * กำหนดขั้นตอน: validate → reserve inventory → charge payment → confirm order → notify
+ */
+public abstract class OrderProcessingTemplate {
+    
+    protected final Logger log = LoggerFactory.getLogger(getClass());
+    
+    /**
+     * Template method - กำหนดขั้นตอนการ process order
+     * Subclass ไม่ควร override method นี้
+     */
+    @Transactional
+    public final OrderResult processOrder(OrderRequest request) {
+        log.info("เริ่มประมวลผลคำสั่งซื้อ: orderId={}", request.getOrderId());
+        
+        try {
+            // ขั้นที่ 1: ตรวจสอบความถูกต้อง
+            ValidationResult validation = validateOrder(request);
+            if (!validation.isValid()) {
+                return OrderResult.failed(validation.getErrors());
             }
-        }
-        return csv.toString().getBytes();
-    }
-
-    @Override
-    protected String getFileExtension() {
-        return ".csv";
-    }
-}
-```
-
-```java
-// template/ExcelOrderExport.java
-package com.example.patterns.template;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.repository.OrderRepository;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
-
-import java.util.*;
-import java.util.stream.Collectors;
-
-@Component
-@RequiredArgsConstructor
-public class ExcelOrderExport extends DataExportTemplate<Order> {
-
-    private final OrderRepository orderRepository;
-
-    @Override
-    protected void validateRequest(ExportRequest request) {
-        if (request.getDateFrom() == null) {
-            throw new IllegalArgumentException("Date from required");
+            
+            // ขั้นที่ 2: จอง inventory
+            InventoryReservation reservation = reserveInventory(request);
+            
+            // ขั้นที่ 3: ชำระเงิน
+            PaymentResult payment = chargePayment(request, reservation);
+            if (!payment.isSuccessful()) {
+                releaseInventory(reservation);
+                return OrderResult.paymentFailed(payment.getError());
+            }
+            
+            // ขั้นที่ 4: ยืนยันคำสั่งซื้อ
+            Order confirmedOrder = confirmOrder(request, reservation, payment);
+            
+            // ขั้นที่ 5: แจ้งเตือน (optional hook)
+            postProcess(confirmedOrder);
+            
+            log.info("ประมวลผลคำสั่งซื้อสำเร็จ: orderId={}", confirmedOrder.getId());
+            return OrderResult.success(confirmedOrder);
+            
+        } catch (Exception e) {
+            log.error("เกิดข้อผิดพลาดในการประมวลผลคำสั่งซื้อ", e);
+            return OrderResult.error(e.getMessage());
         }
     }
-
-    @Override
-    protected List<Order> fetchData(ExportRequest request) {
-        return orderRepository.findByCreatedAtBetween(
-            request.getDateFrom(),
-            request.getDateTo() != null ? request.getDateTo() :
-                java.time.LocalDateTime.now());
+    
+    // Abstract methods ที่ subclass ต้อง implement
+    protected abstract ValidationResult validateOrder(OrderRequest request);
+    protected abstract InventoryReservation reserveInventory(OrderRequest request);
+    protected abstract PaymentResult chargePayment(OrderRequest request, InventoryReservation reservation);
+    protected abstract Order confirmOrder(OrderRequest request, InventoryReservation reservation, PaymentResult payment);
+    
+    // Hook method - subclass อาจ override หรือไม่ก็ได้
+    protected void releaseInventory(InventoryReservation reservation) {
+        log.warn("คืน inventory: reservationId={}", reservation.getId());
     }
-
-    @Override
-    protected List<Map<String, Object>> transformData(
-            List<Order> orders, ExportRequest request) {
-        return orders.stream().map(order -> {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("orderId", order.getOrderId());
-            row.put("customerId", order.getCustomerId());
-            row.put("amount", order.getAmount().doubleValue());
-            row.put("status", order.getStatus());
-            row.put("createdAt", order.getCreatedAt().toString());
-            return row;
-        }).collect(Collectors.toList());
-    }
-
-    @Override
-    protected byte[] formatData(List<Map<String, Object>> data, ExportRequest request) {
-        // จำลองการสร้าง Excel (ในระบบจริงใช้ Apache POI)
-        return "Excel data".getBytes();
-    }
-
-    @Override
-    protected String getFileExtension() {
-        return ".xlsx";
-    }
-}
-```
-
----
-
-## ขั้นตอนที่ 3162: Strategy Pattern กับ Spring Beans
-
-Strategy Pattern แยก algorithms ออกจาก context และ inject ผ่าน Spring DI
-
-```java
-// strategy/PricingStrategy.java
-package com.example.patterns.strategy;
-
-import com.example.patterns.model.Order;
-import java.math.BigDecimal;
-
-public interface PricingStrategy {
-    BigDecimal calculatePrice(Order order);
-    BigDecimal calculateDiscount(Order order);
-    String getStrategyName();
-    boolean supports(String customerType);
-}
-```
-
-```java
-// strategy/RegularPricingStrategy.java
-package com.example.patterns.strategy;
-
-import com.example.patterns.model.Order;
-import org.springframework.stereotype.Component;
-
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-
-@Component("regularPricing")
-public class RegularPricingStrategy implements PricingStrategy {
-
-    @Override
-    public BigDecimal calculatePrice(Order order) {
-        return order.getBasePrice().setScale(2, RoundingMode.HALF_UP);
-    }
-
-    @Override
-    public BigDecimal calculateDiscount(Order order) {
-        // ไม่มี discount สำหรับ regular customers
-        return BigDecimal.ZERO;
-    }
-
-    @Override
-    public String getStrategyName() {
-        return "REGULAR";
-    }
-
-    @Override
-    public boolean supports(String customerType) {
-        return "REGULAR".equals(customerType);
+    
+    // Hook method สำหรับ post-processing
+    protected void postProcess(Order order) {
+        // Default: ไม่ทำอะไร
     }
 }
 ```
 
 ```java
-// strategy/VipPricingStrategy.java
-package com.example.patterns.strategy;
+// domain/order/StandardOrderProcessor.java
+package com.example.shophub.domain.order;
 
-import com.example.patterns.model.Order;
-import org.springframework.stereotype.Component;
-
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-
-@Component("vipPricing")
-public class VipPricingStrategy implements PricingStrategy {
-
-    private static final BigDecimal VIP_DISCOUNT_RATE = new BigDecimal("0.15"); // 15%
-    private static final BigDecimal VOLUME_DISCOUNT_THRESHOLD = new BigDecimal("5000");
-    private static final BigDecimal VOLUME_DISCOUNT_RATE = new BigDecimal("0.05"); // เพิ่ม 5%
-
-    @Override
-    public BigDecimal calculateDiscount(Order order) {
-        BigDecimal discount = order.getBasePrice().multiply(VIP_DISCOUNT_RATE);
-        
-        // เพิ่ม volume discount ถ้าออเดอร์ใหญ่
-        if (order.getBasePrice().compareTo(VOLUME_DISCOUNT_THRESHOLD) > 0) {
-            BigDecimal volumeDiscount = order.getBasePrice().multiply(VOLUME_DISCOUNT_RATE);
-            discount = discount.add(volumeDiscount);
-        }
-        
-        return discount.setScale(2, RoundingMode.HALF_UP);
-    }
-
-    @Override
-    public BigDecimal calculatePrice(Order order) {
-        return order.getBasePrice()
-            .subtract(calculateDiscount(order))
-            .setScale(2, RoundingMode.HALF_UP);
-    }
-
-    @Override
-    public String getStrategyName() {
-        return "VIP";
-    }
-
-    @Override
-    public boolean supports(String customerType) {
-        return "VIP".equals(customerType) || "PREMIUM".equals(customerType);
-    }
-}
-```
-
-```java
-// strategy/SeasonalPricingStrategy.java
-package com.example.patterns.strategy;
-
-import com.example.patterns.model.Order;
-import org.springframework.stereotype.Component;
-
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.time.LocalDate;
-import java.time.MonthDay;
-
-@Component("seasonalPricing")
-public class SeasonalPricingStrategy implements PricingStrategy {
-
-    @Override
-    public BigDecimal calculateDiscount(Order order) {
-        // ตรวจสอบว่าอยู่ในช่วง seasonal sale หรือไม่
-        if (isSeasonalPeriod()) {
-            return order.getBasePrice()
-                .multiply(new BigDecimal("0.20")) // 20% off
-                .setScale(2, RoundingMode.HALF_UP);
-        }
-        return BigDecimal.ZERO;
-    }
-
-    @Override
-    public BigDecimal calculatePrice(Order order) {
-        return order.getBasePrice()
-            .subtract(calculateDiscount(order))
-            .setScale(2, RoundingMode.HALF_UP);
-    }
-
-    @Override
-    public String getStrategyName() {
-        return "SEASONAL";
-    }
-
-    @Override
-    public boolean supports(String customerType) {
-        return isSeasonalPeriod(); // ใช้ได้ทุกคนในช่วง seasonal
-    }
-
-    private boolean isSeasonalPeriod() {
-        MonthDay today = MonthDay.now();
-        // Black Friday: November 23-30
-        MonthDay blackFridayStart = MonthDay.of(11, 23);
-        MonthDay blackFridayEnd = MonthDay.of(11, 30);
-        // Year-end sale: December 26-31
-        MonthDay yearEndStart = MonthDay.of(12, 26);
-        MonthDay yearEndEnd = MonthDay.of(12, 31);
-        
-        return (today.compareTo(blackFridayStart) >= 0 &&
-                today.compareTo(blackFridayEnd) <= 0) ||
-               (today.compareTo(yearEndStart) >= 0 &&
-                today.compareTo(yearEndEnd) <= 0);
-    }
-}
-```
-
-```java
-// service/PricingService.java
-package com.example.patterns.service;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.strategy.PricingStrategy;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
-import java.util.List;
-
-@Slf4j
 @Service
-@RequiredArgsConstructor
-public class PricingService {
-
-    // Spring inject strategies ทั้งหมดอัตโนมัติ
-    private final List<PricingStrategy> pricingStrategies;
-
-    public BigDecimal calculateFinalPrice(Order order, String customerType) {
-        PricingStrategy strategy = selectStrategy(customerType);
-        log.info("Using pricing strategy: {} for customer type: {}",
-            strategy.getStrategyName(), customerType);
-        
-        BigDecimal price = strategy.calculatePrice(order);
-        BigDecimal discount = strategy.calculateDiscount(order);
-        
-        log.info("Price: {}, Discount: {}, Final: {}",
-            order.getBasePrice(), discount, price);
-        return price;
+public class StandardOrderProcessor extends OrderProcessingTemplate {
+    
+    private final InventoryService inventoryService;
+    private final PaymentGateway paymentGateway;
+    private final OrderRepository orderRepository;
+    private final NotificationService notificationService;
+    
+    public StandardOrderProcessor(
+            InventoryService inventoryService,
+            PaymentGateway paymentGateway,
+            OrderRepository orderRepository,
+            NotificationService notificationService) {
+        this.inventoryService = inventoryService;
+        this.paymentGateway = paymentGateway;
+        this.orderRepository = orderRepository;
+        this.notificationService = notificationService;
     }
-
-    private PricingStrategy selectStrategy(String customerType) {
-        return pricingStrategies.stream()
-            .filter(s -> s.supports(customerType))
-            .findFirst()
-            .orElseThrow(() -> new IllegalArgumentException(
-                "No pricing strategy for type: " + customerType));
+    
+    @Override
+    protected ValidationResult validateOrder(OrderRequest request) {
+        List<String> errors = new ArrayList<>();
+        
+        if (request.getItems() == null || request.getItems().isEmpty()) {
+            errors.add("คำสั่งซื้อต้องมีสินค้าอย่างน้อย 1 รายการ");
+        }
+        
+        if (request.getCustomerId() == null) {
+            errors.add("ต้องระบุ Customer ID");
+        }
+        
+        return errors.isEmpty() 
+            ? ValidationResult.valid() 
+            : ValidationResult.invalid(errors);
     }
+    
+    @Override
+    protected InventoryReservation reserveInventory(OrderRequest request) {
+        return inventoryService.reserve(request.getItems());
+    }
+    
+    @Override
+    protected PaymentResult chargePayment(OrderRequest request, InventoryReservation reservation) {
+        return paymentGateway.charge(
+            request.getPaymentMethod(),
+            reservation.getTotalAmount()
+        );
+    }
+    
+    @Override
+    protected Order confirmOrder(OrderRequest request, InventoryReservation reservation, PaymentResult payment) {
+        Order order = Order.builder()
+            .customerId(request.getCustomerId())
+            .items(reservation.getItems())
+            .paymentId(payment.getTransactionId())
+            .status(OrderStatus.CONFIRMED)
+            .build();
+        return orderRepository.save(order);
+    }
+    
+    @Override
+    protected void postProcess(Order order) {
+        // ส่ง notification ให้ลูกค้า
+        notificationService.sendOrderConfirmation(order);
+    }
+}
+```
 
-    // ดู strategies ที่มี
-    public List<String> getAvailableStrategies() {
-        return pricingStrategies.stream()
-            .map(PricingStrategy::getStrategyName)
-            .toList();
+```java
+// domain/order/SubscriptionOrderProcessor.java
+// Template สำหรับ subscription order มีขั้นตอนพิเศษ
+@Service
+public class SubscriptionOrderProcessor extends OrderProcessingTemplate {
+    
+    private final SubscriptionService subscriptionService;
+    // ... other dependencies
+    
+    @Override
+    protected ValidationResult validateOrder(OrderRequest request) {
+        // ตรวจสอบเพิ่มเติมสำหรับ subscription
+        ValidationResult base = super.validateOrder(request); // ถ้าต้องการ
+        
+        // ตรวจสอบว่า subscription ยังใช้งานได้
+        if (!subscriptionService.isActive(request.getCustomerId())) {
+            return ValidationResult.invalid(List.of("Subscription หมดอายุแล้ว"));
+        }
+        
+        return ValidationResult.valid();
+    }
+    
+    @Override
+    protected PaymentResult chargePayment(OrderRequest request, InventoryReservation reservation) {
+        // Subscription ใช้ stored payment method อัตโนมัติ
+        return subscriptionService.chargeStoredPayment(
+            request.getCustomerId(),
+            reservation.getTotalAmount()
+        );
+    }
+    
+    // implement other abstract methods...
+    @Override
+    protected InventoryReservation reserveInventory(OrderRequest request) {
+        return inventoryService.reserveWithPriority(request.getItems(), Priority.SUBSCRIPTION);
+    }
+    
+    @Override
+    protected Order confirmOrder(OrderRequest request, InventoryReservation reservation, PaymentResult payment) {
+        Order order = Order.builder()
+            .customerId(request.getCustomerId())
+            .orderType(OrderType.SUBSCRIPTION)
+            .items(reservation.getItems())
+            .paymentId(payment.getTransactionId())
+            .status(OrderStatus.CONFIRMED)
+            .build();
+        return orderRepository.save(order);
+    }
+}
+```
+
+### Report Export Template
+
+```java
+// report/ReportExportTemplate.java
+public abstract class ReportExportTemplate<T> {
+    
+    public final byte[] export(ReportRequest request) {
+        // ดึงข้อมูล
+        List<T> data = fetchData(request);
+        
+        // เตรียม headers
+        List<String> headers = getHeaders();
+        
+        // แปลงข้อมูลเป็น rows
+        List<List<Object>> rows = data.stream()
+            .map(this::toRow)
+            .collect(Collectors.toList());
+        
+        // สร้าง output
+        return buildOutput(headers, rows, request);
+    }
+    
+    protected abstract List<T> fetchData(ReportRequest request);
+    protected abstract List<String> getHeaders();
+    protected abstract List<Object> toRow(T item);
+    protected abstract byte[] buildOutput(List<String> headers, List<List<Object>> rows, ReportRequest request);
+}
+
+// report/SalesReportPdfExporter.java
+@Service
+public class SalesReportPdfExporter extends ReportExportTemplate<SalesRecord> {
+    
+    @Override
+    protected List<SalesRecord> fetchData(ReportRequest request) {
+        return salesRepository.findByDateRange(request.getFrom(), request.getTo());
+    }
+    
+    @Override
+    protected List<String> getHeaders() {
+        return List.of("วันที่", "สินค้า", "จำนวน", "ราคา", "รวม");
+    }
+    
+    @Override
+    protected List<Object> toRow(SalesRecord record) {
+        return List.of(
+            record.getDate(),
+            record.getProductName(),
+            record.getQuantity(),
+            record.getUnitPrice(),
+            record.getTotal()
+        );
+    }
+    
+    @Override
+    protected byte[] buildOutput(List<String> headers, List<List<Object>> rows, ReportRequest request) {
+        // สร้าง PDF ด้วย Apache PDFBox หรือ iText
+        return pdfBuilder.build(headers, rows);
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3163: Observer Pattern กับ ApplicationEvents
+## ขั้นตอนที่ 3162: Strategy Pattern กับ @Qualifier
 
-Spring ApplicationEvents เป็น built-in observer pattern ของ Spring Framework
+Strategy Pattern ช่วยให้เราสลับ algorithm ได้ตอน runtime โดยไม่ต้องแก้ code ใน Spring Boot เราใช้ `@Qualifier` เพื่อเลือก strategy ที่ต้องการ
+
+### Use Case: Shipping Calculator
 
 ```java
-// event/OrderCreatedEvent.java
-package com.example.patterns.event;
+// shipping/ShippingStrategy.java
+package com.example.shophub.shipping;
 
-import com.example.patterns.model.Order;
-import lombok.Getter;
-import org.springframework.context.ApplicationEvent;
+public interface ShippingStrategy {
+    ShippingCost calculate(ShippingRequest request);
+    boolean supports(ShippingMethod method);
+}
 
-@Getter
-public class OrderCreatedEvent extends ApplicationEvent {
-    private final Order order;
-    private final String createdBy;
+// shipping/StandardShippingStrategy.java
+@Service
+@Qualifier("standard")
+public class StandardShippingStrategy implements ShippingStrategy {
+    
+    private static final BigDecimal BASE_RATE = new BigDecimal("50");
+    private static final BigDecimal PER_KG_RATE = new BigDecimal("20");
+    
+    @Override
+    public ShippingCost calculate(ShippingRequest request) {
+        BigDecimal weight = request.getWeightKg();
+        BigDecimal cost = BASE_RATE.add(weight.multiply(PER_KG_RATE));
+        
+        return ShippingCost.builder()
+            .method(ShippingMethod.STANDARD)
+            .amount(cost)
+            .estimatedDays(5)
+            .build();
+    }
+    
+    @Override
+    public boolean supports(ShippingMethod method) {
+        return method == ShippingMethod.STANDARD;
+    }
+}
 
-    public OrderCreatedEvent(Object source, Order order, String createdBy) {
-        super(source);
-        this.order = order;
-        this.createdBy = createdBy;
+// shipping/ExpressShippingStrategy.java
+@Service
+@Qualifier("express")
+public class ExpressShippingStrategy implements ShippingStrategy {
+    
+    @Override
+    public ShippingCost calculate(ShippingRequest request) {
+        BigDecimal weight = request.getWeightKg();
+        BigDecimal cost = new BigDecimal("150").add(weight.multiply(new BigDecimal("40")));
+        
+        return ShippingCost.builder()
+            .method(ShippingMethod.EXPRESS)
+            .amount(cost)
+            .estimatedDays(1)
+            .build();
+    }
+    
+    @Override
+    public boolean supports(ShippingMethod method) {
+        return method == ShippingMethod.EXPRESS;
+    }
+}
+
+// shipping/FreemiumShippingStrategy.java
+@Service
+@Qualifier("free")
+public class FreemiumShippingStrategy implements ShippingStrategy {
+    
+    @Override
+    public ShippingCost calculate(ShippingRequest request) {
+        return ShippingCost.builder()
+            .method(ShippingMethod.FREE)
+            .amount(BigDecimal.ZERO)
+            .estimatedDays(7)
+            .build();
+    }
+    
+    @Override
+    public boolean supports(ShippingMethod method) {
+        return method == ShippingMethod.FREE;
     }
 }
 ```
 
+### Strategy Selector/Context
+
 ```java
-// event/OrderStatusChangedEvent.java
-package com.example.patterns.event;
-
-import com.example.patterns.model.Order;
-import lombok.Getter;
-import org.springframework.context.ApplicationEvent;
-
-@Getter
-public class OrderStatusChangedEvent extends ApplicationEvent {
-    private final Order order;
-    private final String previousStatus;
-    private final String newStatus;
-
-    public OrderStatusChangedEvent(Object source, Order order,
-            String previousStatus, String newStatus) {
-        super(source);
-        this.order = order;
-        this.previousStatus = previousStatus;
-        this.newStatus = newStatus;
+// shipping/ShippingCalculatorService.java
+@Service
+public class ShippingCalculatorService {
+    
+    // Spring inject ทุก implementation ของ ShippingStrategy
+    private final List<ShippingStrategy> strategies;
+    
+    public ShippingCalculatorService(List<ShippingStrategy> strategies) {
+        this.strategies = strategies;
+    }
+    
+    public ShippingCost calculate(ShippingRequest request, ShippingMethod method) {
+        return strategies.stream()
+            .filter(s -> s.supports(method))
+            .findFirst()
+            .map(s -> s.calculate(request))
+            .orElseThrow(() -> new UnsupportedShippingMethodException(method));
+    }
+    
+    public List<ShippingCost> getAllOptions(ShippingRequest request) {
+        return strategies.stream()
+            .map(s -> s.calculate(request))
+            .sorted(Comparator.comparing(ShippingCost::getAmount))
+            .collect(Collectors.toList());
     }
 }
 ```
+
+### Strategy พร้อม Map-based lookup (ประสิทธิภาพสูงกว่า)
+
+```java
+// shipping/ShippingStrategyRegistry.java
+@Configuration
+public class ShippingStrategyRegistry {
+    
+    @Bean
+    public Map<ShippingMethod, ShippingStrategy> shippingStrategies(
+            @Qualifier("standard") ShippingStrategy standard,
+            @Qualifier("express") ShippingStrategy express,
+            @Qualifier("free") ShippingStrategy free) {
+        
+        return Map.of(
+            ShippingMethod.STANDARD, standard,
+            ShippingMethod.EXPRESS, express,
+            ShippingMethod.FREE, free
+        );
+    }
+}
+
+// Service ที่ใช้ Map lookup
+@Service
+public class OptimizedShippingService {
+    
+    private final Map<ShippingMethod, ShippingStrategy> strategyMap;
+    
+    public OptimizedShippingService(Map<ShippingMethod, ShippingStrategy> strategyMap) {
+        this.strategyMap = strategyMap;
+    }
+    
+    public ShippingCost calculate(ShippingRequest request, ShippingMethod method) {
+        ShippingStrategy strategy = strategyMap.get(method);
+        if (strategy == null) {
+            throw new UnsupportedShippingMethodException(method);
+        }
+        return strategy.calculate(request);
+    }
+}
+```
+
+### Discount Strategy Pattern
+
+```java
+// discount/DiscountStrategy.java
+public interface DiscountStrategy {
+    Discount apply(Cart cart, Customer customer);
+    int getPriority(); // ลำดับความสำคัญ
+}
+
+// discount/MemberDiscountStrategy.java
+@Service
+public class MemberDiscountStrategy implements DiscountStrategy {
+    
+    @Override
+    public Discount apply(Cart cart, Customer customer) {
+        if (!customer.isMember()) {
+            return Discount.none();
+        }
+        
+        BigDecimal rate = switch (customer.getMemberLevel()) {
+            case SILVER -> new BigDecimal("0.05");
+            case GOLD -> new BigDecimal("0.10");
+            case PLATINUM -> new BigDecimal("0.15");
+            default -> BigDecimal.ZERO;
+        };
+        
+        return Discount.percentage(rate, "Member discount");
+    }
+    
+    @Override
+    public int getPriority() { return 1; }
+}
+
+// discount/BulkDiscountStrategy.java
+@Service
+public class BulkDiscountStrategy implements DiscountStrategy {
+    
+    private static final int BULK_THRESHOLD = 10;
+    
+    @Override
+    public Discount apply(Cart cart, Customer customer) {
+        boolean hasBulkItems = cart.getItems().stream()
+            .anyMatch(item -> item.getQuantity() >= BULK_THRESHOLD);
+        
+        if (!hasBulkItems) return Discount.none();
+        
+        return Discount.percentage(new BigDecimal("0.08"), "Bulk purchase discount");
+    }
+    
+    @Override
+    public int getPriority() { return 2; }
+}
+
+// discount/DiscountEngine.java - Composite Strategy
+@Service
+public class DiscountEngine {
+    
+    private final List<DiscountStrategy> strategies;
+    
+    public DiscountEngine(List<DiscountStrategy> strategies) {
+        // เรียงตาม priority
+        this.strategies = strategies.stream()
+            .sorted(Comparator.comparingInt(DiscountStrategy::getPriority))
+            .collect(Collectors.toList());
+    }
+    
+    public CartWithDiscount applyBestDiscount(Cart cart, Customer customer) {
+        return strategies.stream()
+            .map(s -> s.apply(cart, customer))
+            .filter(d -> !d.isNone())
+            .max(Comparator.comparing(Discount::getAmount))
+            .map(discount -> CartWithDiscount.of(cart, discount))
+            .orElse(CartWithDiscount.of(cart, Discount.none()));
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3163: Observer/Event Pattern กับ ApplicationEventPublisher
+
+Spring มี built-in Event System ผ่าน `ApplicationEventPublisher` ซึ่งช่วย decouple components ได้ดีมาก
+
+### สร้าง Domain Events
+
+```java
+// events/OrderEvent.java
+package com.example.shophub.events;
+
+import org.springframework.context.ApplicationEvent;
+
+public abstract class OrderEvent extends ApplicationEvent {
+    
+    private final String orderId;
+    private final String customerId;
+    
+    protected OrderEvent(Object source, String orderId, String customerId) {
+        super(source);
+        this.orderId = orderId;
+        this.customerId = customerId;
+    }
+    
+    public String getOrderId() { return orderId; }
+    public String getCustomerId() { return customerId; }
+}
+
+// events/OrderPlacedEvent.java
+public class OrderPlacedEvent extends OrderEvent {
+    
+    private final List<OrderItem> items;
+    private final BigDecimal totalAmount;
+    
+    public OrderPlacedEvent(Object source, String orderId, String customerId,
+                            List<OrderItem> items, BigDecimal totalAmount) {
+        super(source, orderId, customerId);
+        this.items = items;
+        this.totalAmount = totalAmount;
+    }
+    
+    public List<OrderItem> getItems() { return items; }
+    public BigDecimal getTotalAmount() { return totalAmount; }
+}
+
+// events/OrderShippedEvent.java
+public class OrderShippedEvent extends OrderEvent {
+    
+    private final String trackingNumber;
+    private final String carrier;
+    private final LocalDateTime estimatedDelivery;
+    
+    // constructor, getters...
+}
+
+// events/OrderCancelledEvent.java
+public class OrderCancelledEvent extends OrderEvent {
+    
+    private final String reason;
+    private final BigDecimal refundAmount;
+    
+    // constructor, getters...
+}
+```
+
+### Publish Events จาก Service
 
 ```java
 // service/OrderService.java
-package com.example.patterns.service;
-
-import com.example.patterns.event.OrderCreatedEvent;
-import com.example.patterns.event.OrderStatusChangedEvent;
-import com.example.patterns.model.Order;
-import com.example.patterns.repository.OrderRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
-@Slf4j
 @Service
-@RequiredArgsConstructor
+@Transactional
 public class OrderService {
-
+    
     private final OrderRepository orderRepository;
     private final ApplicationEventPublisher eventPublisher;
-
-    @Transactional
-    public Order createOrder(Order order, String createdBy) {
-        Order saved = orderRepository.save(order);
-        
-        // Publish event หลัง save สำเร็จ
-        eventPublisher.publishEvent(
-            new OrderCreatedEvent(this, saved, createdBy));
-        
-        log.info("Order created and event published: {}", saved.getOrderId());
-        return saved;
+    
+    public OrderService(OrderRepository orderRepository,
+                        ApplicationEventPublisher eventPublisher) {
+        this.orderRepository = orderRepository;
+        this.eventPublisher = eventPublisher;
     }
-
-    @Transactional
-    public Order updateOrderStatus(String orderId, String newStatus) {
-        Order order = orderRepository.findByOrderId(orderId)
-            .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
+    
+    public Order placeOrder(PlaceOrderCommand command) {
+        // สร้าง order
+        Order order = Order.create(command);
+        orderRepository.save(order);
         
-        String previousStatus = order.getStatus();
-        order.setStatus(newStatus);
-        Order updated = orderRepository.save(order);
+        // publish event - ทุก listener จะถูกแจ้ง
+        eventPublisher.publishEvent(new OrderPlacedEvent(
+            this,
+            order.getId(),
+            order.getCustomerId(),
+            order.getItems(),
+            order.getTotalAmount()
+        ));
         
-        // Publish status change event
-        eventPublisher.publishEvent(
-            new OrderStatusChangedEvent(this, updated, previousStatus, newStatus));
+        return order;
+    }
+    
+    public void shipOrder(String orderId, ShipmentDetails shipment) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
         
-        return updated;
+        order.markAsShipped(shipment);
+        orderRepository.save(order);
+        
+        eventPublisher.publishEvent(new OrderShippedEvent(
+            this,
+            orderId,
+            order.getCustomerId(),
+            shipment.getTrackingNumber(),
+            shipment.getCarrier(),
+            shipment.getEstimatedDelivery()
+        ));
     }
 }
 ```
 
+### Event Listeners
+
 ```java
-// listener/OrderEventListener.java
-package com.example.patterns.listener;
-
-import com.example.patterns.event.OrderCreatedEvent;
-import com.example.patterns.event.OrderStatusChangedEvent;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Component;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
-
-@Slf4j
+// listeners/NotificationEventListener.java
 @Component
-@RequiredArgsConstructor
-public class OrderEventListener {
-
-    private final NotificationService notificationService;
-    private final AuditService auditService;
-    private final InventoryService inventoryService;
-
-    // Listen to OrderCreatedEvent
+public class NotificationEventListener {
+    
+    private final EmailService emailService;
+    private final SmsService smsService;
+    private final PushNotificationService pushService;
+    
     @EventListener
-    @Async  // ทำงาน async ใน thread แยก
-    public void onOrderCreated(OrderCreatedEvent event) {
-        log.info("Handling OrderCreatedEvent: {}", event.getOrder().getOrderId());
+    public void handleOrderPlaced(OrderPlacedEvent event) {
+        log.info("ส่ง notification สำหรับคำสั่งซื้อใหม่: {}", event.getOrderId());
         
-        // ส่ง notification
-        notificationService.sendOrderConfirmation(event.getOrder());
+        emailService.sendOrderConfirmation(
+            event.getCustomerId(),
+            event.getOrderId(),
+            event.getTotalAmount()
+        );
+    }
+    
+    @EventListener
+    public void handleOrderShipped(OrderShippedEvent event) {
+        smsService.sendShippingNotification(
+            event.getCustomerId(),
+            event.getTrackingNumber(),
+            event.getCarrier()
+        );
         
-        // บันทึก audit
-        auditService.logOrderCreation(event.getOrder(), event.getCreatedBy());
+        pushService.send(
+            event.getCustomerId(),
+            "คำสั่งซื้อของคุณถูกจัดส่งแล้ว! Tracking: " + event.getTrackingNumber()
+        );
     }
-
-    // ทำงานเฉพาะหลัง transaction commit สำเร็จ
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void onOrderCreatedAfterCommit(OrderCreatedEvent event) {
-        log.info("Transaction committed, updating inventory for: {}",
-            event.getOrder().getOrderId());
-        inventoryService.reserveInventory(event.getOrder());
+    
+    @EventListener
+    @Async // ส่งใน background thread
+    public void handleOrderCancelled(OrderCancelledEvent event) {
+        emailService.sendCancellationEmail(
+            event.getCustomerId(),
+            event.getOrderId(),
+            event.getReason(),
+            event.getRefundAmount()
+        );
     }
+}
 
-    // ทำงานถ้า transaction rollback
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_ROLLBACK)
-    public void onOrderCreatedRollback(OrderCreatedEvent event) {
-        log.warn("Transaction rolled back for order: {}", event.getOrder().getOrderId());
-        inventoryService.releaseReservation(event.getOrder());
-    }
-
+// listeners/InventoryEventListener.java
+@Component
+public class InventoryEventListener {
+    
+    private final InventoryService inventoryService;
+    
     @EventListener
     @Async
-    public void onOrderStatusChanged(OrderStatusChangedEvent event) {
-        log.info("Order {} status changed: {} -> {}",
-            event.getOrder().getOrderId(),
-            event.getPreviousStatus(),
-            event.getNewStatus());
+    public void handleOrderPlaced(OrderPlacedEvent event) {
+        // อัปเดต inventory เมื่อมีคำสั่งซื้อใหม่
+        event.getItems().forEach(item -> 
+            inventoryService.decreaseStock(item.getProductId(), item.getQuantity())
+        );
+    }
+    
+    @EventListener
+    public void handleOrderCancelled(OrderCancelledEvent event) {
+        // คืน inventory เมื่อยกเลิกคำสั่งซื้อ
+        inventoryService.restoreStock(event.getOrderId());
+    }
+}
 
-        // ส่ง notification เมื่อ status เปลี่ยน
-        if ("SHIPPED".equals(event.getNewStatus())) {
-            notificationService.sendShippingNotification(event.getOrder());
-        } else if ("CANCELLED".equals(event.getNewStatus())) {
-            notificationService.sendCancellationNotification(event.getOrder());
-            inventoryService.releaseReservation(event.getOrder());
-        }
+// listeners/AnalyticsEventListener.java
+@Component
+public class AnalyticsEventListener {
+    
+    private final AnalyticsService analyticsService;
+    
+    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    // TransactionalEventListener - จะทำงานหลัง transaction commit สำเร็จเท่านั้น
+    public void handleOrderPlaced(OrderPlacedEvent event) {
+        analyticsService.trackOrderPlaced(
+            event.getOrderId(),
+            event.getCustomerId(),
+            event.getTotalAmount()
+        );
+    }
+}
+```
+
+### Async Event Processing
+
+```java
+// config/AsyncConfig.java
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+    
+    @Bean(name = "eventExecutor")
+    public TaskExecutor eventExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(5);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("event-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.initialize();
+        return executor;
+    }
+}
+
+// Async listener ที่กำหนด executor
+@Component
+public class AuditEventListener {
+    
+    @Async("eventExecutor")
+    @EventListener
+    public void handleAnyOrderEvent(OrderEvent event) {
+        auditLog.record(
+            event.getClass().getSimpleName(),
+            event.getOrderId(),
+            event.getCustomerId(),
+            LocalDateTime.now()
+        );
     }
 }
 ```
@@ -623,346 +766,314 @@ public class OrderEventListener {
 
 ## ขั้นตอนที่ 3164: Decorator Pattern กับ Spring Proxies
 
-Decorator Pattern เพิ่ม behavior ให้ objects โดยไม่ต้อง modify class เดิม
+Decorator Pattern ใช้ `@Primary` และ delegate เพื่อเพิ่ม behavior โดยไม่แก้ implementation เดิม
+
+### Use Case: Caching Decorator
 
 ```java
-// service/OrderProcessor.java
-package com.example.patterns.service;
-
-import com.example.patterns.model.Order;
-
-public interface OrderProcessor {
-    Order process(Order order);
-    String getProcessorName();
+// service/ProductService.java (interface)
+public interface ProductService {
+    Product findById(String productId);
+    List<Product> findAll(ProductFilter filter);
+    Product save(Product product);
 }
-```
 
-```java
-// service/BaseOrderProcessor.java
-package com.example.patterns.service;
-
-import com.example.patterns.model.Order;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
-@Slf4j
-@Service("baseOrderProcessor")
-public class BaseOrderProcessor implements OrderProcessor {
-
+// service/DefaultProductService.java (Primary implementation)
+@Service
+public class DefaultProductService implements ProductService {
+    
+    private final ProductRepository productRepository;
+    
     @Override
-    public Order process(Order order) {
-        log.info("Base processing order: {}", order.getOrderId());
-        order.setStatus("PROCESSED");
-        return order;
+    public Product findById(String productId) {
+        return productRepository.findById(productId)
+            .orElseThrow(() -> new ProductNotFoundException(productId));
     }
-
+    
     @Override
-    public String getProcessorName() {
-        return "BASE";
+    public List<Product> findAll(ProductFilter filter) {
+        return productRepository.findWithFilter(filter);
+    }
+    
+    @Override
+    public Product save(Product product) {
+        return productRepository.save(product);
     }
 }
-```
 
-```java
-// decorator/LoggingOrderProcessorDecorator.java
-package com.example.patterns.decorator;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.service.OrderProcessor;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
-@RequiredArgsConstructor
-public class LoggingOrderProcessorDecorator implements OrderProcessor {
-
-    private final OrderProcessor delegate;
-
+// service/CachingProductService.java (Decorator)
+@Service
+@Primary // Spring จะ inject service นี้เป็น default
+public class CachingProductService implements ProductService {
+    
+    private final ProductService delegate; // inject DefaultProductService
+    private final CacheManager cacheManager;
+    
+    // ใช้ @Qualifier เพื่อ inject DefaultProductService ไม่ใช่ตัวเอง
+    public CachingProductService(
+            @Qualifier("defaultProductService") ProductService delegate,
+            CacheManager cacheManager) {
+        this.delegate = delegate;
+        this.cacheManager = cacheManager;
+    }
+    
     @Override
-    public Order process(Order order) {
-        long startTime = System.currentTimeMillis();
-        log.info("[{}] Processing started for order: {}",
-            getProcessorName(), order.getOrderId());
+    public Product findById(String productId) {
+        Cache cache = cacheManager.getCache("products");
+        Cache.ValueWrapper cached = cache.get(productId);
         
+        if (cached != null) {
+            log.debug("Cache hit สำหรับ product: {}", productId);
+            return (Product) cached.get();
+        }
+        
+        Product product = delegate.findById(productId);
+        cache.put(productId, product);
+        return product;
+    }
+    
+    @Override
+    public List<Product> findAll(ProductFilter filter) {
+        // Cache list ด้วย filter เป็น key
+        String cacheKey = filter.toCacheKey();
+        Cache cache = cacheManager.getCache("productLists");
+        Cache.ValueWrapper cached = cache.get(cacheKey);
+        
+        if (cached != null) {
+            return (List<Product>) cached.get();
+        }
+        
+        List<Product> products = delegate.findAll(filter);
+        cache.put(cacheKey, products);
+        return products;
+    }
+    
+    @Override
+    public Product save(Product product) {
+        Product saved = delegate.save(product);
+        // Invalidate cache เมื่อมีการบันทึก
+        cacheManager.getCache("products").evict(saved.getId());
+        cacheManager.getCache("productLists").clear();
+        return saved;
+    }
+}
+```
+
+### Logging Decorator
+
+```java
+// service/LoggingProductService.java
+@Service
+@ConditionalOnProperty(name = "feature.detailed-logging", havingValue = "true")
+public class LoggingProductService implements ProductService {
+    
+    private final ProductService delegate;
+    private final MetricsService metricsService;
+    
+    public LoggingProductService(
+            @Qualifier("cachingProductService") ProductService delegate,
+            MetricsService metricsService) {
+        this.delegate = delegate;
+        this.metricsService = metricsService;
+    }
+    
+    @Override
+    public Product findById(String productId) {
+        long startTime = System.currentTimeMillis();
         try {
-            Order result = delegate.process(order);
-            long elapsed = System.currentTimeMillis() - startTime;
-            log.info("[{}] Processing completed in {}ms for order: {}",
-                getProcessorName(), elapsed, order.getOrderId());
+            Product result = delegate.findById(productId);
+            long duration = System.currentTimeMillis() - startTime;
+            
+            log.info("findById({}) completed in {}ms", productId, duration);
+            metricsService.recordLatency("product.findById", duration);
+            
             return result;
         } catch (Exception e) {
-            log.error("[{}] Processing failed for order: {}",
-                getProcessorName(), order.getOrderId(), e);
+            log.error("findById({}) failed: {}", productId, e.getMessage());
+            metricsService.incrementCounter("product.findById.errors");
             throw e;
         }
     }
-
+    
+    // delegate other methods similarly...
     @Override
-    public String getProcessorName() {
-        return "LOGGING -> " + delegate.getProcessorName();
+    public List<Product> findAll(ProductFilter filter) {
+        return delegate.findAll(filter);
     }
-}
-```
-
-```java
-// decorator/ValidationOrderProcessorDecorator.java
-package com.example.patterns.decorator;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.service.OrderProcessor;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
-import java.math.BigDecimal;
-
-@Slf4j
-@RequiredArgsConstructor
-public class ValidationOrderProcessorDecorator implements OrderProcessor {
-
-    private final OrderProcessor delegate;
-
+    
     @Override
-    public Order process(Order order) {
-        validateOrder(order);
-        return delegate.process(order);
-    }
-
-    private void validateOrder(Order order) {
-        if (order.getOrderId() == null || order.getOrderId().isBlank()) {
-            throw new IllegalArgumentException("Order ID required");
-        }
-        if (order.getAmount() == null ||
-                order.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Amount must be positive");
-        }
-        if (order.getCustomerId() == null) {
-            throw new IllegalArgumentException("Customer ID required");
-        }
-        log.debug("Order validation passed: {}", order.getOrderId());
-    }
-
-    @Override
-    public String getProcessorName() {
-        return "VALIDATION -> " + delegate.getProcessorName();
-    }
-}
-```
-
-```java
-// decorator/CachingOrderProcessorDecorator.java
-package com.example.patterns.decorator;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.service.OrderProcessor;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
-@Slf4j
-@RequiredArgsConstructor
-public class CachingOrderProcessorDecorator implements OrderProcessor {
-
-    private final OrderProcessor delegate;
-    private final Map<String, Order> cache = new ConcurrentHashMap<>();
-
-    @Override
-    public Order process(Order order) {
-        String cacheKey = order.getOrderId();
-        
-        if (cache.containsKey(cacheKey)) {
-            log.debug("Cache hit for order: {}", cacheKey);
-            return cache.get(cacheKey);
-        }
-        
-        Order result = delegate.process(order);
-        cache.put(cacheKey, result);
-        log.debug("Cached result for order: {}", cacheKey);
-        return result;
-    }
-
-    @Override
-    public String getProcessorName() {
-        return "CACHING -> " + delegate.getProcessorName();
-    }
-
-    public void clearCache() {
-        cache.clear();
-    }
-}
-```
-
-```java
-// config/OrderProcessorConfig.java
-package com.example.patterns.config;
-
-import com.example.patterns.decorator.*;
-import com.example.patterns.service.BaseOrderProcessor;
-import com.example.patterns.service.OrderProcessor;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
-
-@Configuration
-public class OrderProcessorConfig {
-
-    @Bean
-    @Primary
-    public OrderProcessor decoratedOrderProcessor(BaseOrderProcessor base) {
-        // Stack decorators: Caching -> Validation -> Logging -> Base
-        return new CachingOrderProcessorDecorator(
-            new ValidationOrderProcessorDecorator(
-                new LoggingOrderProcessorDecorator(
-                    base
-                )
-            )
-        );
+    public Product save(Product product) {
+        return delegate.save(product);
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3165: Factory Pattern กับ @Bean Methods
+## ขั้นตอนที่ 3165: Factory Pattern กับ @Bean และ @ConditionalOn*
 
-Factory Pattern สร้าง objects โดยไม่ระบุ concrete class โดยตรง
+Factory Pattern ใน Spring ใช้ `@Bean` methods และ `@Conditional` annotations เพื่อสร้าง object ตาม condition
+
+### Payment Gateway Factory
 
 ```java
-// factory/NotificationSender.java
-package com.example.patterns.factory;
+// payment/PaymentGateway.java
+public interface PaymentGateway {
+    PaymentResult charge(PaymentRequest request);
+    RefundResult refund(RefundRequest request);
+    PaymentStatus getStatus(String transactionId);
+}
 
-public interface NotificationSender {
-    void send(String recipient, String message);
-    boolean supports(String channel);
-    String getChannel();
+// payment/StripePaymentGateway.java
+@Component("stripeGateway")
+public class StripePaymentGateway implements PaymentGateway {
+    
+    @Value("${payment.stripe.api-key}")
+    private String apiKey;
+    
+    @Override
+    public PaymentResult charge(PaymentRequest request) {
+        // Stripe SDK integration
+        Stripe.apiKey = apiKey;
+        try {
+            PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
+                .setAmount(request.getAmountCents())
+                .setCurrency(request.getCurrency())
+                .setPaymentMethod(request.getPaymentMethodId())
+                .setConfirm(true)
+                .build();
+            
+            PaymentIntent intent = PaymentIntent.create(params);
+            return PaymentResult.success(intent.getId());
+        } catch (StripeException e) {
+            return PaymentResult.failed(e.getMessage());
+        }
+    }
+    
+    @Override
+    public RefundResult refund(RefundRequest request) {
+        // Stripe refund implementation
+        try {
+            RefundCreateParams params = RefundCreateParams.builder()
+                .setPaymentIntent(request.getTransactionId())
+                .setAmount(request.getAmountCents())
+                .build();
+            Refund refund = Refund.create(params);
+            return RefundResult.success(refund.getId());
+        } catch (StripeException e) {
+            return RefundResult.failed(e.getMessage());
+        }
+    }
+    
+    @Override
+    public PaymentStatus getStatus(String transactionId) {
+        // implementation
+        return PaymentStatus.SUCCESS;
+    }
+}
+
+// payment/Omise2C2PGateway.java (Thai payment gateway)
+@Component("omiseGateway")
+public class Omise2C2PGateway implements PaymentGateway {
+    
+    @Value("${payment.omise.public-key}")
+    private String publicKey;
+    
+    @Value("${payment.omise.secret-key}")
+    private String secretKey;
+    
+    @Override
+    public PaymentResult charge(PaymentRequest request) {
+        // Omise integration สำหรับตลาดไทย
+        Client client = new Client(publicKey, secretKey);
+        ChargeParams params = ChargeParams.builder()
+            .amount(request.getAmountSatang()) // Satang (1/100 of THB)
+            .currency("thb")
+            .card(request.getToken())
+            .build();
+        
+        try {
+            Charge charge = client.charges().create(params);
+            return PaymentResult.success(charge.getId());
+        } catch (OmiseException e) {
+            return PaymentResult.failed(e.getMessage());
+        }
+    }
+    
+    @Override
+    public RefundResult refund(RefundRequest request) {
+        // implementation
+        return RefundResult.success("refund-id");
+    }
+    
+    @Override
+    public PaymentStatus getStatus(String transactionId) {
+        return PaymentStatus.SUCCESS;
+    }
 }
 ```
 
+### Payment Factory Configuration
+
 ```java
-// factory/EmailNotificationSender.java
-package com.example.patterns.factory;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-@Slf4j
-@Component
-public class EmailNotificationSender implements NotificationSender {
-
-    @Override
-    public void send(String recipient, String message) {
-        log.info("Sending email to {}: {}", recipient, message);
-        // ส่ง email จริง
+// config/PaymentConfig.java
+@Configuration
+public class PaymentConfig {
+    
+    @Bean
+    @ConditionalOnProperty(name = "payment.provider", havingValue = "stripe")
+    public PaymentGateway stripePaymentGateway(
+            @Qualifier("stripeGateway") PaymentGateway gateway) {
+        return gateway;
     }
-
-    @Override
-    public boolean supports(String channel) {
-        return "EMAIL".equalsIgnoreCase(channel);
+    
+    @Bean
+    @ConditionalOnProperty(name = "payment.provider", havingValue = "omise")
+    public PaymentGateway omisePaymentGateway(
+            @Qualifier("omiseGateway") PaymentGateway gateway) {
+        return gateway;
     }
-
-    @Override
-    public String getChannel() {
-        return "EMAIL";
+    
+    // Mock gateway สำหรับ development/testing
+    @Bean
+    @ConditionalOnProperty(name = "payment.provider", havingValue = "mock", matchIfMissing = true)
+    @Profile({"dev", "test"})
+    public PaymentGateway mockPaymentGateway() {
+        return new MockPaymentGateway();
+    }
+    
+    // Payment gateway factory ที่เลือกตาม currency
+    @Bean
+    public PaymentGatewayFactory paymentGatewayFactory(
+            @Qualifier("stripeGateway") PaymentGateway stripe,
+            @Qualifier("omiseGateway") PaymentGateway omise) {
+        return new CurrencyBasedPaymentGatewayFactory(stripe, omise);
     }
 }
-```
 
-```java
-// factory/SmsNotificationSender.java
-package com.example.patterns.factory;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-@Slf4j
-@Component
-public class SmsNotificationSender implements NotificationSender {
-
-    @Override
-    public void send(String recipient, String message) {
-        log.info("Sending SMS to {}: {}", recipient, message);
-        // ส่ง SMS จริง
-    }
-
-    @Override
-    public boolean supports(String channel) {
-        return "SMS".equalsIgnoreCase(channel);
-    }
-
-    @Override
-    public String getChannel() {
-        return "SMS";
-    }
+// payment/PaymentGatewayFactory.java
+public interface PaymentGatewayFactory {
+    PaymentGateway getGateway(String currency, PaymentType type);
 }
-```
 
-```java
-// factory/PushNotificationSender.java
-package com.example.patterns.factory;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-@Slf4j
-@Component
-public class PushNotificationSender implements NotificationSender {
-
+// payment/CurrencyBasedPaymentGatewayFactory.java
+public class CurrencyBasedPaymentGatewayFactory implements PaymentGatewayFactory {
+    
+    private final PaymentGateway stripeGateway;
+    private final PaymentGateway omiseGateway;
+    
+    public CurrencyBasedPaymentGatewayFactory(PaymentGateway stripeGateway,
+                                               PaymentGateway omiseGateway) {
+        this.stripeGateway = stripeGateway;
+        this.omiseGateway = omiseGateway;
+    }
+    
     @Override
-    public void send(String recipient, String message) {
-        log.info("Sending push notification to {}: {}", recipient, message);
-        // ส่ง push notification
-    }
-
-    @Override
-    public boolean supports(String channel) {
-        return "PUSH".equalsIgnoreCase(channel);
-    }
-
-    @Override
-    public String getChannel() {
-        return "PUSH";
-    }
-}
-```
-
-```java
-// factory/NotificationFactory.java
-package com.example.patterns.factory;
-
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
-
-import java.util.List;
-
-@Component
-@RequiredArgsConstructor
-public class NotificationFactory {
-
-    // Spring inject ทุก NotificationSender implementations
-    private final List<NotificationSender> senders;
-
-    public NotificationSender getSender(String channel) {
-        return senders.stream()
-            .filter(sender -> sender.supports(channel))
-            .findFirst()
-            .orElseThrow(() -> new IllegalArgumentException(
-                "No sender for channel: " + channel));
-    }
-
-    public List<String> getAvailableChannels() {
-        return senders.stream()
-            .map(NotificationSender::getChannel)
-            .toList();
-    }
-
-    // Abstract Factory - สร้าง sender สำหรับ notification type
-    public NotificationSender getSenderForOrderEvent(String orderStatus) {
-        return switch (orderStatus) {
-            case "CONFIRMED" -> getSender("EMAIL");
-            case "SHIPPED" -> getSender("SMS");
-            case "DELIVERED" -> getSender("PUSH");
-            default -> getSender("EMAIL");
+    public PaymentGateway getGateway(String currency, PaymentType type) {
+        return switch (currency.toUpperCase()) {
+            case "THB" -> omiseGateway; // ใช้ Omise สำหรับบาทไทย
+            case "USD", "EUR", "GBP" -> stripeGateway;
+            default -> throw new UnsupportedCurrencyException(currency);
         };
     }
 }
@@ -970,609 +1081,530 @@ public class NotificationFactory {
 
 ---
 
-## ขั้นตอนที่ 3166: Composite Pattern สำหรับ Services
+## ขั้นตอนที่ 3166: Command Pattern กับ Spring
 
-Composite Pattern ทำให้ treat individual objects และ groups เหมือนกัน
+Command Pattern encapsulate request เป็น object ทำให้ support undo/redo, queuing, และ logging ได้
 
-```java
-// composite/ReportComponent.java
-package com.example.patterns.composite;
-
-import java.util.Map;
-
-public interface ReportComponent {
-    String getName();
-    Map<String, Object> generateReport(ReportContext context);
-    void addComponent(ReportComponent component);
-    void removeComponent(ReportComponent component);
-    boolean isLeaf();
-}
-```
-
-```java
-// composite/SalesReportLeaf.java
-package com.example.patterns.composite;
-
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-import java.util.*;
-
-@Slf4j
-@Component
-@RequiredArgsConstructor
-public class SalesReportLeaf implements ReportComponent {
-
-    private final SalesDataService salesDataService;
-
-    @Override
-    public String getName() {
-        return "Sales Report";
-    }
-
-    @Override
-    public Map<String, Object> generateReport(ReportContext context) {
-        log.info("Generating sales report for period: {} - {}",
-            context.getDateFrom(), context.getDateTo());
-        
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.put("type", "SALES");
-        report.put("totalOrders", salesDataService.countOrders(context));
-        report.put("totalRevenue", salesDataService.getTotalRevenue(context));
-        report.put("averageOrderValue", salesDataService.getAverageOrderValue(context));
-        report.put("topProducts", salesDataService.getTopProducts(context, 5));
-        return report;
-    }
-
-    @Override
-    public void addComponent(ReportComponent component) {
-        throw new UnsupportedOperationException("Leaf cannot add components");
-    }
-
-    @Override
-    public void removeComponent(ReportComponent component) {
-        throw new UnsupportedOperationException("Leaf cannot remove components");
-    }
-
-    @Override
-    public boolean isLeaf() { return true; }
-}
-```
-
-```java
-// composite/CompositeReport.java
-package com.example.patterns.composite;
-
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
-import java.util.*;
-
-@Slf4j
-@RequiredArgsConstructor
-public class CompositeReport implements ReportComponent {
-
-    @Getter
-    private final String name;
-    private final List<ReportComponent> children = new ArrayList<>();
-
-    @Override
-    public Map<String, Object> generateReport(ReportContext context) {
-        log.info("Generating composite report: {}", name);
-        
-        Map<String, Object> compositeReport = new LinkedHashMap<>();
-        compositeReport.put("reportName", name);
-        compositeReport.put("generatedAt", new Date());
-        
-        Map<String, Object> sections = new LinkedHashMap<>();
-        for (ReportComponent child : children) {
-            sections.put(child.getName(), child.generateReport(context));
-        }
-        compositeReport.put("sections", sections);
-        
-        return compositeReport;
-    }
-
-    @Override
-    public void addComponent(ReportComponent component) {
-        children.add(component);
-        log.debug("Added component '{}' to '{}'", component.getName(), name);
-    }
-
-    @Override
-    public void removeComponent(ReportComponent component) {
-        children.remove(component);
-    }
-
-    @Override
-    public boolean isLeaf() { return false; }
-}
-```
-
-```java
-// config/ReportConfig.java
-package com.example.patterns.config;
-
-import com.example.patterns.composite.*;
-import lombok.RequiredArgsConstructor;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-@Configuration
-@RequiredArgsConstructor
-public class ReportConfig {
-
-    private final SalesReportLeaf salesReport;
-    private final InventoryReportLeaf inventoryReport;
-    private final CustomerReportLeaf customerReport;
-
-    // สร้าง composite report tree
-    @Bean
-    public ReportComponent monthlyReportTree() {
-        CompositeReport monthly = new CompositeReport("Monthly Report");
-        
-        // Sales section
-        CompositeReport salesSection = new CompositeReport("Sales Section");
-        salesSection.addComponent(salesReport);
-        
-        // Operations section
-        CompositeReport operationsSection = new CompositeReport("Operations Section");
-        operationsSection.addComponent(inventoryReport);
-        operationsSection.addComponent(customerReport);
-        
-        monthly.addComponent(salesSection);
-        monthly.addComponent(operationsSection);
-        
-        return monthly;
-    }
-}
-```
-
----
-
-## ขั้นตอนที่ 3167: Command Pattern กับ Spring
-
-Command Pattern encapsulate requests เป็น objects ทำให้ queue, undo และ log ได้
+### สร้าง Command Framework
 
 ```java
 // command/Command.java
-package com.example.patterns.command;
-
 public interface Command<T> {
     T execute();
     void undo();
-    boolean canUndo();
-    String getCommandName();
     String getDescription();
 }
+
+// command/CommandBus.java
+@Service
+public class CommandBus {
+    
+    private final Map<Class<?>, CommandHandler<?, ?>> handlers;
+    private final Deque<Command<?>> executedCommands = new ArrayDeque<>();
+    private final ApplicationEventPublisher eventPublisher;
+    private final AuditService auditService;
+    
+    public CommandBus(List<CommandHandler<?, ?>> handlerList,
+                     ApplicationEventPublisher eventPublisher,
+                     AuditService auditService) {
+        this.handlers = handlerList.stream()
+            .collect(Collectors.toMap(
+                h -> h.getCommandClass(),
+                h -> h
+            ));
+        this.eventPublisher = eventPublisher;
+        this.auditService = auditService;
+    }
+    
+    @SuppressWarnings("unchecked")
+    public <C, R> R dispatch(C command) {
+        CommandHandler<C, R> handler = (CommandHandler<C, R>) handlers.get(command.getClass());
+        
+        if (handler == null) {
+            throw new CommandHandlerNotFoundException(command.getClass());
+        }
+        
+        // Audit logging
+        auditService.logCommand(command);
+        
+        R result = handler.handle(command);
+        
+        // Publish command executed event
+        eventPublisher.publishEvent(new CommandExecutedEvent(command, result));
+        
+        return result;
+    }
+}
+
+// command/CommandHandler.java
+public interface CommandHandler<C, R> {
+    R handle(C command);
+    Class<C> getCommandClass();
+}
 ```
+
+### Concrete Commands
 
 ```java
 // command/CreateOrderCommand.java
-package com.example.patterns.command;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.repository.OrderRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
-@RequiredArgsConstructor
-public class CreateOrderCommand implements Command<Order> {
-
-    private final OrderRepository orderRepository;
-    private final Order orderToCreate;
-    private Order createdOrder;
-
-    @Override
-    public Order execute() {
-        log.info("Executing CreateOrderCommand for: {}", orderToCreate.getOrderId());
-        createdOrder = orderRepository.save(orderToCreate);
-        return createdOrder;
-    }
-
-    @Override
-    public void undo() {
-        if (createdOrder != null) {
-            log.info("Undoing CreateOrderCommand: deleting {}", createdOrder.getOrderId());
-            orderRepository.delete(createdOrder);
-            createdOrder = null;
-        }
-    }
-
-    @Override
-    public boolean canUndo() {
-        return createdOrder != null;
-    }
-
-    @Override
-    public String getCommandName() {
-        return "CREATE_ORDER";
-    }
-
-    @Override
-    public String getDescription() {
-        return "Create order: " + orderToCreate.getOrderId();
-    }
-}
-```
-
-```java
-// command/UpdateOrderStatusCommand.java
-package com.example.patterns.command;
-
-import com.example.patterns.model.Order;
-import com.example.patterns.repository.OrderRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
-@RequiredArgsConstructor
-public class UpdateOrderStatusCommand implements Command<Order> {
-
-    private final OrderRepository orderRepository;
-    private final String orderId;
-    private final String newStatus;
-    private String previousStatus;
-
-    @Override
-    public Order execute() {
-        Order order = orderRepository.findByOrderId(orderId)
-            .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
-        
-        previousStatus = order.getStatus();
-        order.setStatus(newStatus);
-        Order updated = orderRepository.save(order);
-        
-        log.info("Order {} status changed: {} -> {}", orderId, previousStatus, newStatus);
-        return updated;
-    }
-
-    @Override
-    public void undo() {
-        if (previousStatus != null) {
-            Order order = orderRepository.findByOrderId(orderId)
-                .orElseThrow();
-            order.setStatus(previousStatus);
-            orderRepository.save(order);
-            log.info("Undone: Order {} status restored to {}", orderId, previousStatus);
-        }
-    }
-
-    @Override
-    public boolean canUndo() {
-        return previousStatus != null;
-    }
-
-    @Override
-    public String getCommandName() {
-        return "UPDATE_ORDER_STATUS";
-    }
-
-    @Override
-    public String getDescription() {
-        return String.format("Update order %s status to %s", orderId, newStatus);
-    }
-}
-```
-
-```java
-// command/CommandInvoker.java
-package com.example.patterns.command;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.List;
-import java.util.ArrayList;
-
-@Slf4j
-@Component
-public class CommandInvoker {
-
-    private final Deque<Command<?>> commandHistory = new ArrayDeque<>();
-    private final List<CommandExecutionRecord> executionLog = new ArrayList<>();
-
-    // Execute command และบันทึกใน history
-    public <T> T executeCommand(Command<T> command) {
-        log.info("Executing command: {}", command.getCommandName());
-        
-        long startTime = System.currentTimeMillis();
-        try {
-            T result = command.execute();
-            long elapsed = System.currentTimeMillis() - startTime;
-            
-            if (command.canUndo()) {
-                commandHistory.push(command);
-            }
-            
-            executionLog.add(new CommandExecutionRecord(
-                command.getCommandName(),
-                command.getDescription(),
-                "SUCCESS",
-                elapsed
-            ));
-            
-            log.info("Command {} completed in {}ms", command.getCommandName(), elapsed);
-            return result;
-        } catch (Exception e) {
-            executionLog.add(new CommandExecutionRecord(
-                command.getCommandName(),
-                command.getDescription(),
-                "FAILED: " + e.getMessage(),
-                System.currentTimeMillis() - startTime
-            ));
-            throw e;
-        }
-    }
-
-    // Undo command ล่าสุด
-    public void undo() {
-        if (commandHistory.isEmpty()) {
-            log.warn("No commands to undo");
-            return;
-        }
-        
-        Command<?> lastCommand = commandHistory.pop();
-        log.info("Undoing command: {}", lastCommand.getCommandName());
-        lastCommand.undo();
-    }
-
-    // Undo หลาย commands
-    public void undoLast(int count) {
-        for (int i = 0; i < count && !commandHistory.isEmpty(); i++) {
-            undo();
-        }
-    }
-
-    public List<CommandExecutionRecord> getExecutionLog() {
-        return List.copyOf(executionLog);
-    }
-
-    public int getPendingUndoCount() {
-        return commandHistory.size();
-    }
-
-    // Record class
-    public record CommandExecutionRecord(
-        String commandName,
-        String description,
-        String status,
-        long executionTimeMs
-    ) {}
-}
-```
-
----
-
-## ขั้นตอนที่ 3168: Builder Pattern กับ Spring
-
-Builder Pattern ใน Spring สำหรับสร้าง complex objects
-
-```java
-// builder/QueryBuilder.java
-package com.example.patterns.builder;
-
-import lombok.Builder;
-import lombok.Getter;
-import org.springframework.data.domain.Sort;
-
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-
-@Getter
-public class OrderQuery {
+public class CreateOrderCommand {
     private final String customerId;
-    private final String status;
-    private final LocalDateTime dateFrom;
-    private final LocalDateTime dateTo;
-    private final Double minAmount;
-    private final Double maxAmount;
-    private final List<String> productCodes;
-    private final int page;
-    private final int size;
-    private final Sort sort;
-    private final boolean includeDeleted;
+    private final List<OrderItem> items;
+    private final String paymentMethodId;
+    private final ShippingAddress shippingAddress;
+    
+    // constructor, getters...
+}
 
-    private OrderQuery(Builder builder) {
-        this.customerId = builder.customerId;
-        this.status = builder.status;
-        this.dateFrom = builder.dateFrom;
-        this.dateTo = builder.dateTo;
-        this.minAmount = builder.minAmount;
-        this.maxAmount = builder.maxAmount;
-        this.productCodes = List.copyOf(builder.productCodes);
-        this.page = builder.page;
-        this.size = builder.size;
-        this.sort = builder.sort;
-        this.includeDeleted = builder.includeDeleted;
+// command/CreateOrderCommandHandler.java
+@Component
+public class CreateOrderCommandHandler implements CommandHandler<CreateOrderCommand, Order> {
+    
+    private final OrderService orderService;
+    private final CustomerValidator customerValidator;
+    
+    @Override
+    public Order handle(CreateOrderCommand command) {
+        customerValidator.validate(command.getCustomerId());
+        
+        return orderService.createOrder(
+            command.getCustomerId(),
+            command.getItems(),
+            command.getPaymentMethodId(),
+            command.getShippingAddress()
+        );
     }
-
-    public static Builder builder() {
-        return new Builder();
+    
+    @Override
+    public Class<CreateOrderCommand> getCommandClass() {
+        return CreateOrderCommand.class;
     }
+}
 
-    public static class Builder {
-        private String customerId;
-        private String status;
-        private LocalDateTime dateFrom;
-        private LocalDateTime dateTo;
-        private Double minAmount;
-        private Double maxAmount;
-        private List<String> productCodes = new ArrayList<>();
-        private int page = 0;
-        private int size = 20;
-        private Sort sort = Sort.by(Sort.Direction.DESC, "createdAt");
-        private boolean includeDeleted = false;
+// command/CancelOrderCommand.java
+public class CancelOrderCommand {
+    private final String orderId;
+    private final String reason;
+    private final String requestedByUserId;
+    
+    // constructor, getters...
+}
 
-        public Builder forCustomer(String customerId) {
-            this.customerId = customerId;
-            return this;
-        }
-
-        public Builder withStatus(String status) {
-            this.status = status;
-            return this;
-        }
-
-        public Builder betweenDates(LocalDateTime from, LocalDateTime to) {
-            this.dateFrom = from;
-            this.dateTo = to;
-            return this;
-        }
-
-        public Builder amountBetween(double min, double max) {
-            this.minAmount = min;
-            this.maxAmount = max;
-            return this;
-        }
-
-        public Builder withProducts(List<String> codes) {
-            this.productCodes.addAll(codes);
-            return this;
-        }
-
-        public Builder page(int page, int size) {
-            this.page = page;
-            this.size = size;
-            return this;
-        }
-
-        public Builder sortBy(String field, Sort.Direction direction) {
-            this.sort = Sort.by(direction, field);
-            return this;
-        }
-
-        public Builder includeDeleted() {
-            this.includeDeleted = true;
-            return this;
-        }
-
-        public OrderQuery build() {
-            validate();
-            return new OrderQuery(this);
-        }
-
-        private void validate() {
-            if (dateFrom != null && dateTo != null && dateTo.isBefore(dateFrom)) {
-                throw new IllegalStateException("dateTo must be after dateFrom");
-            }
-            if (minAmount != null && maxAmount != null && minAmount > maxAmount) {
-                throw new IllegalStateException("minAmount must be <= maxAmount");
-            }
-            if (size <= 0 || size > 1000) {
-                throw new IllegalStateException("size must be between 1 and 1000");
-            }
-        }
+// command/CancelOrderCommandHandler.java
+@Component
+public class CancelOrderCommandHandler implements CommandHandler<CancelOrderCommand, CancellationResult> {
+    
+    private final OrderService orderService;
+    private final AuthorizationService authService;
+    
+    @Override
+    public CancellationResult handle(CancelOrderCommand command) {
+        // ตรวจสอบสิทธิ์
+        authService.checkPermission(command.getRequestedByUserId(), Permission.CANCEL_ORDER);
+        
+        return orderService.cancelOrder(command.getOrderId(), command.getReason());
+    }
+    
+    @Override
+    public Class<CancelOrderCommand> getCommandClass() {
+        return CancelOrderCommand.class;
     }
 }
 ```
 
----
-
-## ขั้นตอนที่ 3169: Testing Design Patterns
+### REST Controller ใช้ Command Bus
 
 ```java
-// test/PatternsTest.java
-package com.example.patterns;
-
-import com.example.patterns.command.*;
-import com.example.patterns.factory.*;
-import com.example.patterns.model.Order;
-import com.example.patterns.service.PricingService;
-import com.example.patterns.strategy.PricingStrategy;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.*;
-
-@SpringBootTest
-class PatternsTest {
-
-    @Autowired
-    private PricingService pricingService;
-
-    @Autowired
-    private NotificationFactory notificationFactory;
-
-    @Autowired
-    private CommandInvoker commandInvoker;
-
-    @Autowired
-    private List<PricingStrategy> strategies;
-
-    @Test
-    void strategyPattern_shouldSelectCorrectPricing() {
-        Order order = Order.builder()
-            .orderId("TEST-001")
-            .basePrice(new BigDecimal("1000"))
-            .build();
-
-        // VIP ได้รับ 15% discount
-        BigDecimal vipPrice = pricingService.calculateFinalPrice(order, "VIP");
-        assertThat(vipPrice).isEqualByComparingTo("850.00");
-
-        // Regular ไม่ได้ discount
-        BigDecimal regularPrice = pricingService.calculateFinalPrice(order, "REGULAR");
-        assertThat(regularPrice).isEqualByComparingTo("1000.00");
+// controller/OrderController.java
+@RestController
+@RequestMapping("/api/v1/orders")
+public class OrderController {
+    
+    private final CommandBus commandBus;
+    
+    @PostMapping
+    public ResponseEntity<Order> createOrder(@Valid @RequestBody CreateOrderRequest request,
+                                              @AuthenticationPrincipal UserDetails user) {
+        CreateOrderCommand command = new CreateOrderCommand(
+            user.getUsername(),
+            request.getItems(),
+            request.getPaymentMethodId(),
+            request.getShippingAddress()
+        );
+        
+        Order order = commandBus.dispatch(command);
+        return ResponseEntity.status(HttpStatus.CREATED).body(order);
     }
-
-    @Test
-    void factoryPattern_shouldCreateCorrectSender() {
-        NotificationSender emailSender = notificationFactory.getSender("EMAIL");
-        assertThat(emailSender.getChannel()).isEqualTo("EMAIL");
-        assertThat(emailSender).isInstanceOf(EmailNotificationSender.class);
-
-        NotificationSender smsSender = notificationFactory.getSender("SMS");
-        assertThat(smsSender.getChannel()).isEqualTo("SMS");
-    }
-
-    @Test
-    void commandPattern_shouldExecuteAndUndo() {
-        Order order = Order.builder()
-            .orderId("CMD-TEST-001")
-            .customerId("CUST-001")
-            .amount(new BigDecimal("500"))
-            .status("NEW")
-            .createdAt(LocalDateTime.now())
-            .build();
-
-        // Execute command
-        // (in real test would use mock repository)
-        assertThat(commandInvoker.getPendingUndoCount()).isEqualTo(0);
-    }
-
-    @Test
-    void strategyPattern_shouldListAllStrategies() {
-        List<String> availableStrategies = pricingService.getAvailableStrategies();
-        assertThat(availableStrategies).contains("REGULAR", "VIP", "SEASONAL");
+    
+    @PostMapping("/{orderId}/cancel")
+    public ResponseEntity<CancellationResult> cancelOrder(
+            @PathVariable String orderId,
+            @RequestBody CancelOrderRequest request,
+            @AuthenticationPrincipal UserDetails user) {
+        
+        CancelOrderCommand command = new CancelOrderCommand(
+            orderId,
+            request.getReason(),
+            user.getUsername()
+        );
+        
+        return ResponseEntity.ok(commandBus.dispatch(command));
     }
 }
 ```
 
 ---
 
-## สรุป Part 89
+## ขั้นตอนที่ 3167: Composite Pattern สำหรับ Services
 
-ในส่วนนี้เราได้เรียนรู้:
-- **Template Method Pattern** - กำหนด algorithm skeleton ใน base class
-- **Strategy Pattern** - แยก algorithms และ inject ผ่าน Spring DI
-- **Observer Pattern** - Spring ApplicationEvents สำหรับ loose coupling
-- **Decorator Pattern** - เพิ่ม behavior โดยไม่ modify class เดิม
-- **Factory Pattern** - สร้าง objects ผ่าน Spring IoC container
-- **Composite Pattern** - จัดการ tree structure ของ components
-- **Command Pattern** - Encapsulate requests เป็น objects พร้อม undo
-- **Builder Pattern** - สร้าง complex objects อย่างปลอดภัย
+Composite Pattern ช่วยให้เรา treat individual objects และ groups of objects เหมือนกัน
+
+### Use Case: Discount Composite
+
+```java
+// discount/DiscountComponent.java
+public interface DiscountComponent {
+    BigDecimal calculate(Cart cart, Customer customer);
+    String getDescription();
+}
+
+// discount/PercentageDiscount.java (Leaf)
+public class PercentageDiscount implements DiscountComponent {
+    
+    private final BigDecimal rate;
+    private final String description;
+    
+    public PercentageDiscount(BigDecimal rate, String description) {
+        this.rate = rate;
+        this.description = description;
+    }
+    
+    @Override
+    public BigDecimal calculate(Cart cart, Customer customer) {
+        return cart.getTotalAmount().multiply(rate);
+    }
+    
+    @Override
+    public String getDescription() { return description; }
+}
+
+// discount/FixedDiscount.java (Leaf)
+public class FixedDiscount implements DiscountComponent {
+    
+    private final BigDecimal amount;
+    private final String description;
+    
+    @Override
+    public BigDecimal calculate(Cart cart, Customer customer) {
+        return amount.min(cart.getTotalAmount()); // ไม่ให้เกินราคาสินค้า
+    }
+    
+    @Override
+    public String getDescription() { return description; }
+}
+
+// discount/CompositeDiscount.java (Composite)
+public class CompositeDiscount implements DiscountComponent {
+    
+    private final List<DiscountComponent> discounts = new ArrayList<>();
+    private final DiscountCombineStrategy combineStrategy;
+    private final String description;
+    
+    public enum DiscountCombineStrategy {
+        SUM,    // รวมส่วนลดทั้งหมด
+        MAX,    // เลือกส่วนลดที่มากที่สุด
+        SEQUENTIAL // ลดซ้อนกัน
+    }
+    
+    public void add(DiscountComponent discount) {
+        discounts.add(discount);
+    }
+    
+    @Override
+    public BigDecimal calculate(Cart cart, Customer customer) {
+        return switch (combineStrategy) {
+            case SUM -> discounts.stream()
+                .map(d -> d.calculate(cart, customer))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            
+            case MAX -> discounts.stream()
+                .map(d -> d.calculate(cart, customer))
+                .max(BigDecimal::compareTo)
+                .orElse(BigDecimal.ZERO);
+            
+            case SEQUENTIAL -> {
+                BigDecimal remainingAmount = cart.getTotalAmount();
+                BigDecimal totalDiscount = BigDecimal.ZERO;
+                for (DiscountComponent discount : discounts) {
+                    BigDecimal d = discount.calculate(
+                        Cart.withAmount(remainingAmount), customer
+                    );
+                    totalDiscount = totalDiscount.add(d);
+                    remainingAmount = remainingAmount.subtract(d);
+                }
+                yield totalDiscount;
+            }
+        };
+    }
+    
+    @Override
+    public String getDescription() { return description; }
+}
+```
+
+### Building Discount Tree ด้วย Builder
+
+```java
+// config/DiscountConfig.java
+@Configuration
+public class DiscountConfig {
+    
+    @Bean
+    public DiscountComponent memberDiscountTree() {
+        CompositeDiscount composite = new CompositeDiscount(
+            DiscountCombineStrategy.MAX,
+            "Member discounts"
+        );
+        
+        composite.add(new PercentageDiscount(new BigDecimal("0.05"), "Silver member"));
+        composite.add(new PercentageDiscount(new BigDecimal("0.10"), "Gold member"));
+        composite.add(new PercentageDiscount(new BigDecimal("0.15"), "Platinum member"));
+        
+        return composite;
+    }
+    
+    @Bean
+    public DiscountComponent fullDiscountTree(
+            @Qualifier("memberDiscountTree") DiscountComponent memberDiscounts) {
+        
+        CompositeDiscount root = new CompositeDiscount(
+            DiscountCombineStrategy.SUM,
+            "All applicable discounts"
+        );
+        
+        root.add(memberDiscounts);
+        root.add(new PercentageDiscount(new BigDecimal("0.02"), "First purchase"));
+        root.add(new FixedDiscount(new BigDecimal("50"), "Welcome coupon"));
+        
+        return root;
+    }
+}
+```
+
+### Validation Composite
+
+```java
+// validation/ValidationRule.java
+public interface ValidationRule<T> {
+    ValidationResult validate(T subject);
+    String getRuleName();
+}
+
+// validation/CompositeValidationRule.java
+public class CompositeValidationRule<T> implements ValidationRule<T> {
+    
+    private final List<ValidationRule<T>> rules;
+    private final String name;
+    
+    public CompositeValidationRule(String name, List<ValidationRule<T>> rules) {
+        this.name = name;
+        this.rules = rules;
+    }
+    
+    @Override
+    public ValidationResult validate(T subject) {
+        List<String> errors = rules.stream()
+            .map(rule -> rule.validate(subject))
+            .filter(result -> !result.isValid())
+            .flatMap(result -> result.getErrors().stream())
+            .collect(Collectors.toList());
+        
+        return errors.isEmpty() ? ValidationResult.valid() : ValidationResult.invalid(errors);
+    }
+    
+    @Override
+    public String getRuleName() { return name; }
+}
+
+// validation/OrderValidationConfig.java
+@Configuration
+public class OrderValidationConfig {
+    
+    @Bean
+    public ValidationRule<Order> orderValidationRule() {
+        return new CompositeValidationRule<>("Order validation", List.of(
+            new NonEmptyItemsRule(),
+            new ValidCustomerRule(),
+            new ValidShippingAddressRule(),
+            new PaymentMethodValidRule(),
+            new StockAvailabilityRule()
+        ));
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3168-3200: Summary และ Best Practices
+
+### Design Pattern Selection Guide
+
+```
+ปัญหา                          Pattern ที่เหมาะสม
+─────────────────────────────────────────────────────
+Algorithm หลายขั้นตอน          Template Method
+เปลี่ยน Algorithm ตอน runtime  Strategy + @Qualifier
+Decouple producers/consumers   Observer (ApplicationEvent)
+เพิ่ม behavior ไม่แก้ code     Decorator (@Primary + delegate)
+สร้าง object ตาม condition     Factory (@Bean + @ConditionalOn*)
+Encapsulate operation          Command + CommandBus
+Tree structure                 Composite
+```
+
+### Anti-patterns ที่ควรหลีกเลี่ยง
+
+```java
+// BAD: Over-engineering ด้วย pattern ที่ไม่จำเป็น
+// ถ้ามีแค่ 1 implementation ไม่ต้องใช้ Strategy
+public interface SimpleCalculator {
+    int add(int a, int b);
+}
+
+// BAD: Circular dependency ใน Decorator
+@Service
+@Primary
+public class BadDecorator implements ProductService {
+    @Autowired // Self-injection - อาจเกิด circular dependency
+    private ProductService self;
+}
+
+// GOOD: ใช้ @Qualifier แทน
+@Service
+@Primary
+public class GoodDecorator implements ProductService {
+    private final ProductService delegate;
+    
+    public GoodDecorator(@Qualifier("defaultProductService") ProductService delegate) {
+        this.delegate = delegate;
+    }
+}
+```
+
+### Testing Design Patterns
+
+```java
+// test/OrderProcessingTemplateTest.java
+@ExtendWith(MockitoExtension.class)
+class OrderProcessingTemplateTest {
+    
+    @Mock
+    private InventoryService inventoryService;
+    
+    @Mock
+    private PaymentGateway paymentGateway;
+    
+    @Mock
+    private OrderRepository orderRepository;
+    
+    @InjectMocks
+    private StandardOrderProcessor processor;
+    
+    @Test
+    void shouldProcessOrderSuccessfully() {
+        // Arrange
+        OrderRequest request = OrderRequest.builder()
+            .customerId("customer-1")
+            .items(List.of(new OrderItem("product-1", 2)))
+            .paymentMethodId("pm-1")
+            .build();
+        
+        InventoryReservation reservation = InventoryReservation.builder()
+            .id("res-1")
+            .totalAmount(new BigDecimal("200"))
+            .build();
+        
+        when(inventoryService.reserve(any())).thenReturn(reservation);
+        when(paymentGateway.charge(any(), any())).thenReturn(PaymentResult.success("tx-1"));
+        when(orderRepository.save(any())).thenAnswer(inv -> {
+            Order order = inv.getArgument(0);
+            order.setId("order-1");
+            return order;
+        });
+        
+        // Act
+        OrderResult result = processor.processOrder(request);
+        
+        // Assert
+        assertTrue(result.isSuccess());
+        assertNotNull(result.getOrder());
+        verify(inventoryService).reserve(request.getItems());
+        verify(paymentGateway).charge(any(), eq(reservation));
+    }
+    
+    @Test
+    void shouldReleaseInventoryOnPaymentFailure() {
+        // Arrange
+        InventoryReservation reservation = InventoryReservation.builder().id("res-1").build();
+        
+        when(inventoryService.reserve(any())).thenReturn(reservation);
+        when(paymentGateway.charge(any(), any())).thenReturn(PaymentResult.failed("Card declined"));
+        
+        // Act
+        OrderResult result = processor.processOrder(validRequest());
+        
+        // Assert
+        assertFalse(result.isSuccess());
+        verify(inventoryService).release(reservation); // ต้องคืน inventory
+    }
+}
+```
+
+### Performance Considerations
+
+```java
+// ใช้ @Lazy เพื่อ delay initialization ของ heavy strategies
+@Configuration
+public class StrategyConfig {
+    
+    @Bean
+    @Lazy // สร้างเมื่อมีการใช้งานครั้งแรก
+    public ComplexAnalyticsStrategy complexAnalyticsStrategy() {
+        return new ComplexAnalyticsStrategy(); // heavy initialization
+    }
+}
+
+// ใช้ Flyweight pattern กับ Strategy ที่ไม่มี state
+// Strategy ที่ไม่มี instance variable ควรเป็น singleton (default ใน Spring)
+@Service // Default scope = Singleton - เหมาะสำหรับ stateless strategy
+public class StatelessShippingStrategy implements ShippingStrategy {
+    
+    @Override
+    public ShippingCost calculate(ShippingRequest request) {
+        // Pure function - ไม่มี state
+        return ShippingCost.of(request.getWeightKg().multiply(new BigDecimal("30")));
+    }
+}
+```
+
+---
+
+## สรุป
+
+ใน Part 89 นี้ เราได้เรียนรู้ Design Patterns ขั้นสูงที่ใช้ใน Spring Boot:
+
+1. **Template Method** - กำหนด workflow skeleton ใน abstract class
+2. **Strategy + @Qualifier** - เปลี่ยน algorithm ตอน runtime
+3. **Observer (ApplicationEvent)** - decouple producers/consumers
+4. **Decorator (@Primary + delegate)** - เพิ่ม behavior โดยไม่แก้ code เดิม
+5. **Factory (@Bean + @Conditional)** - สร้าง object ตาม environment/config
+6. **Command + CommandBus** - encapsulate operations และ support audit
+7. **Composite** - treat single/group objects เหมือนกัน
+
+Pattern เหล่านี้ช่วยให้ code มี:
+- **High cohesion** - แต่ละ class มีหน้าที่ชัดเจน
+- **Low coupling** - components ไม่ผูกติดกัน
+- **Open/Closed** - เพิ่ม feature ได้โดยไม่แก้ existing code
+- **Testability** - ทดสอบได้ง่าย
 
 ---
 
