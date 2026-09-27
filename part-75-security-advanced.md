@@ -1,538 +1,1454 @@
-# Part 75: Advanced Spring Security
+# Part 75: Advanced Spring Security Patterns
 ## ขั้นตอนที่ 2601-2640
 
-> **ระดับ:** ระดับโลก (World-Class)  
-> **เวลาเรียน:** 6-8 ชั่วโมง  
-> **เป้าหมาย:** Implement advanced security patterns for production applications
+**ระดับ:** ระดับโลก (World-Class)
+**เวลาเรียน:** 5-6 ชั่วโมง
+**เป้าหมาย:** เรียนรู้ Advanced Security Patterns ด้วย Spring Security ตั้งแต่ Method Security, Custom Expressions, API Key Authentication, mTLS, OAuth2 Token Introspection และ Security Audit Logging
 
 ---
 
-## ขั้นตอนที่ 2601: Method Security
+## สารบัญ
+
+1. [Method Security พร้อม @PreAuthorize/@PostAuthorize](#method-security)
+2. [Custom Security Expressions](#custom-expressions)
+3. [API Key Authentication](#api-key)
+4. [Mutual TLS (mTLS)](#mtls)
+5. [OAuth2 Token Introspection](#token-introspection)
+6. [Security Audit Logging](#audit-logging)
+7. [CORS Configuration](#cors)
+
+---
+
+## ขั้นตอนที่ 2601: Method Security Setup {#method-security}
+
+### Enable Method Security
+
+Spring Boot 3 ใช้ `@EnableMethodSecurity` แทน `@EnableGlobalMethodSecurity` ที่ deprecated แล้ว
 
 ```java
-// เปิดใช้ Method Security
-@Configuration
-@EnableMethodSecurity(prePostEnabled = true, securedEnabled = true)
-public class MethodSecurityConfig { }
+package com.example.config;
 
-// ตัวอย่างการใช้งาน
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+
+@Configuration
+@EnableMethodSecurity(
+    prePostEnabled = true,     // @PreAuthorize, @PostAuthorize
+    securedEnabled = true,     // @Secured
+    jsr250Enabled = true       // @RolesAllowed
+)
+public class MethodSecurityConfig {
+    // configuration อยู่ที่ annotation แล้ว ไม่ต้องเพิ่มโค้ด
+}
+```
+
+### @PreAuthorize ตัวอย่างจริง
+
+```java
+package com.example.service;
+
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.access.prepost.PostAuthorize;
+import org.springframework.stereotype.Service;
+
 @Service
-@RequiredArgsConstructor
 public class OrderService {
 
-    private final OrderRepository orderRepository;
+    // 1. ตรวจสอบ Role
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<Order> getAllOrders() {
+        return orderRepository.findAll();
+    }
 
-    // ตรวจสอบว่าเป็นเจ้าของ order หรือ ADMIN
-    @PreAuthorize("hasRole('ADMIN') or @orderSecurity.isOwner(#orderId, authentication)")
+    // 2. ตรวจสอบ Authority (fine-grained permission)
+    @PreAuthorize("hasAuthority('order:read')")
     public Order getOrder(Long orderId) {
         return orderRepository.findById(orderId)
             .orElseThrow(() -> new OrderNotFoundException(orderId));
     }
 
-    // อนุญาตเฉพาะ ADMIN สร้าง discount
-    @PreAuthorize("hasRole('ADMIN')")
-    public Order applyDiscount(Long orderId, BigDecimal discount) {
+    // 3. ตรวจสอบ parameter - owner หรือ admin เท่านั้น
+    @PreAuthorize("hasRole('ADMIN') or #customerId == authentication.name")
+    public List<Order> getOrdersByCustomer(String customerId) {
+        return orderRepository.findByCustomerId(customerId);
+    }
+
+    // 4. Multiple conditions ด้วย AND
+    @PreAuthorize("hasRole('MANAGER') and hasAuthority('order:approve')")
+    public Order approveOrder(Long orderId) {
         Order order = getOrder(orderId);
-        order.applyDiscount(discount);
+        order.setStatus(OrderStatus.APPROVED);
         return orderRepository.save(order);
     }
 
-    // กรอง result หลังจาก method ทำงาน
-    @PostAuthorize("returnObject.customerId == authentication.principal.id or hasRole('ADMIN')")
-    public Order getOrderDetails(Long orderId) {
+    // 5. @PostAuthorize - ตรวจสอบหลัง return
+    // ป้องกัน user ดู order ของคนอื่นแม้รู้ orderId
+    @PostAuthorize("returnObject.customerId == authentication.name or hasRole('ADMIN')")
+    public Order getOrderSecure(Long orderId) {
         return orderRepository.findById(orderId)
             .orElseThrow(() -> new OrderNotFoundException(orderId));
     }
 
-    // กรอง collection ตาม tenant
-    @PostFilter("filterObject.tenantId == authentication.principal.tenantId")
-    public List<Order> getAllOrders() {
+    // 6. ตรวจสอบ object ใน request body
+    @PreAuthorize("hasAuthority('order:create') and #request.customerId == authentication.name")
+    public Order createOrder(@P("request") CreateOrderRequest request) {
+        return orderRepository.save(buildOrder(request));
+    }
+
+    // 7. @PostFilter - กรอง collection ที่ return
+    @PostFilter("filterObject.customerId == authentication.name or hasRole('ADMIN')")
+    public List<Order> getOrdersForDashboard() {
         return orderRepository.findAll();
     }
+
+    // 8. @PreFilter - กรอง input collection
+    @PreFilter("filterObject.customerId == authentication.name")
+    public List<Order> bulkUpdate(List<Order> orders) {
+        return orderRepository.saveAll(orders);
+    }
+}
+```
+
+### @Secured และ @RolesAllowed
+
+```java
+package com.example.service;
+
+import jakarta.annotation.security.RolesAllowed;
+import org.springframework.security.access.annotation.Secured;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AdminService {
+
+    // @Secured - Spring-specific, ต้องใส่ ROLE_ prefix
+    @Secured({"ROLE_ADMIN", "ROLE_SUPER_ADMIN"})
+    public void deleteAllData() {
+        // dangerous operation
+    }
+
+    // @RolesAllowed - JSR-250 standard, ไม่ต้องใส่ ROLE_ prefix
+    @RolesAllowed({"ADMIN", "SUPER_ADMIN"})
+    public void exportAllData() {
+        // export operation
+    }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 2602: Custom Security Expressions
+## ขั้นตอนที่ 2605: Custom Security Expressions {#custom-expressions}
+
+### สร้าง Custom Security Service
+
+Custom Security Service คือ Spring Bean ที่เราสามารถเรียกใน SpEL expression ได้ผ่าน `@beanName.methodName()`
 
 ```java
-// Custom security expression component
-@Component("orderSecurity")
-@RequiredArgsConstructor
-public class OrderSecurityExpression {
+package com.example.security;
+
+import org.springframework.security.core.Authentication;
+import org.springframework.stereotype.Component;
+
+@Component("securityService")
+public class CustomSecurityService {
 
     private final OrderRepository orderRepository;
+    private final TeamMemberRepository teamMemberRepository;
+    private final RateLimitService rateLimitService;
 
-    public boolean isOwner(Long orderId, Authentication auth) {
-        if (auth == null) return false;
-
-        UserDetails userDetails = (UserDetails) auth.getPrincipal();
-        Long userId = ((CustomUserDetails) userDetails).getId();
-
-        return orderRepository.existsByIdAndCustomerId(orderId, userId);
+    // ตรวจสอบว่า user เป็นเจ้าของ order
+    public boolean isOrderOwner(Authentication authentication, Long orderId) {
+        String userId = authentication.getName();
+        return orderRepository.findById(orderId)
+            .map(order -> order.getCustomerId().equals(userId))
+            .orElse(false);
     }
 
-    public boolean canAccessProduct(Long productId, Authentication auth) {
-        if (auth == null) return false;
-        // Custom logic: check if product is in user's allowed categories
-        return true;
+    // ตรวจสอบว่า user อยู่ใน team เดียวกันกับ resource
+    public boolean isInSameTeam(Authentication authentication, Long orderId) {
+        String userId = authentication.getName();
+        return orderRepository.findById(orderId)
+            .map(order -> teamMemberRepository.existsByUserIdAndTeamId(
+                userId, order.getTeamId()))
+            .orElse(false);
+    }
+
+    // ตรวจสอบ subscription tier
+    public boolean hasSubscriptionLevel(Authentication authentication, String requiredLevel) {
+        if (authentication.getPrincipal() instanceof CustomUserDetails user) {
+            int required = levelToInt(requiredLevel);
+            int current = levelToInt(user.getSubscriptionLevel());
+            return current >= required;
+        }
+        return false;
+    }
+
+    // Rate limit check
+    public boolean isWithinRateLimit(Authentication authentication) {
+        String userId = authentication.getName();
+        return rateLimitService.isAllowed(userId, "api-calls", 100, Duration.ofMinutes(1));
+    }
+
+    // ตรวจสอบ IP whitelist
+    public boolean isFromAllowedIp(Authentication auth, HttpServletRequest request) {
+        String ip = getClientIp(request);
+        return ipWhitelistService.isAllowed(ip);
+    }
+
+    private int levelToInt(String level) {
+        return switch (level) {
+            case "FREE" -> 0;
+            case "BASIC" -> 1;
+            case "PRO" -> 2;
+            case "ENTERPRISE" -> 3;
+            default -> 0;
+        };
+    }
+
+    private String getClientIp(HttpServletRequest request) {
+        String xff = request.getHeader("X-Forwarded-For");
+        return xff != null ? xff.split(",")[0].trim() : request.getRemoteAddr();
     }
 }
+```
 
-// การใช้งาน
-@GetMapping("/orders/{id}")
-@PreAuthorize("@orderSecurity.isOwner(#id, authentication) or hasRole('ADMIN')")
-public ResponseEntity<OrderResponse> getOrder(@PathVariable Long id) {
-    return ResponseEntity.ok(orderService.getOrder(id));
+### ใช้ Custom Expressions ใน Controller
+
+```java
+package com.example.controller;
+
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    // ใช้ custom security service
+    @GetMapping("/{orderId}")
+    @PreAuthorize("@securityService.isOrderOwner(authentication, #orderId) " +
+                  "or hasRole('ADMIN')")
+    public Order getOrder(@PathVariable Long orderId) {
+        return orderService.findById(orderId);
+    }
+
+    // ตรวจสอบ subscription
+    @PostMapping("/bulk")
+    @PreAuthorize("@securityService.hasSubscriptionLevel(authentication, 'PRO')")
+    public List<Order> bulkCreate(@RequestBody List<CreateOrderRequest> requests) {
+        return orderService.bulkCreate(requests);
+    }
+
+    // ตรวจสอบ team membership
+    @PutMapping("/{orderId}/assign")
+    @PreAuthorize("@securityService.isInSameTeam(authentication, #orderId) " +
+                  "or hasRole('MANAGER')")
+    public Order assignOrder(@PathVariable Long orderId,
+                              @RequestBody AssignRequest request) {
+        return orderService.assign(orderId, request);
+    }
+
+    // ตรวจสอบ rate limit
+    @GetMapping("/search")
+    @PreAuthorize("@securityService.isWithinRateLimit(authentication)")
+    public List<Order> searchOrders(@RequestParam String query) {
+        return orderService.search(query);
+    }
+}
+```
+
+### PermissionEvaluator สำหรับ @PreAuthorize("hasPermission()")
+
+```java
+package com.example.security;
+
+import org.springframework.security.access.PermissionEvaluator;
+import org.springframework.security.core.Authentication;
+import org.springframework.stereotype.Component;
+import java.io.Serializable;
+
+@Component
+public class CustomPermissionEvaluator implements PermissionEvaluator {
+
+    private final OrderRepository orderRepository;
+    private final DocumentRepository documentRepository;
+
+    @Override
+    public boolean hasPermission(Authentication auth, Object targetDomainObject, Object permission) {
+        if (auth == null || targetDomainObject == null) return false;
+
+        String targetType = targetDomainObject.getClass().getSimpleName().toUpperCase();
+        return hasPermission(auth, targetDomainObject, targetType, permission);
+    }
+
+    @Override
+    public boolean hasPermission(Authentication auth, Serializable targetId,
+                                   String targetType, Object permission) {
+        String userId = auth.getName();
+        String perm = permission.toString().toUpperCase();
+
+        return switch (targetType.toUpperCase()) {
+            case "ORDER" -> checkOrderPermission(userId, (Long) targetId, perm);
+            case "DOCUMENT" -> checkDocumentPermission(userId, (Long) targetId, perm);
+            default -> false;
+        };
+    }
+
+    private boolean checkOrderPermission(String userId, Long orderId, String permission) {
+        Order order = orderRepository.findById(orderId).orElse(null);
+        if (order == null) return false;
+
+        return switch (permission) {
+            case "READ" -> order.getCustomerId().equals(userId)
+                          || order.getAssigneeId().equals(userId);
+            case "WRITE" -> order.getCustomerId().equals(userId)
+                           && order.getStatus() == OrderStatus.DRAFT;
+            case "DELETE" -> order.getCustomerId().equals(userId)
+                            && order.getStatus() == OrderStatus.PENDING;
+            default -> false;
+        };
+    }
+
+    private boolean checkDocumentPermission(String userId, Long docId, String permission) {
+        return documentRepository.hasPermission(docId, userId, permission);
+    }
+}
+```
+
+### ใช้ hasPermission()
+
+```java
+@GetMapping("/{orderId}/document")
+@PreAuthorize("hasPermission(#orderId, 'Order', 'READ')")
+public OrderDocument getDocument(@PathVariable Long orderId) {
+    return documentService.getOrderDocument(orderId);
+}
+
+@DeleteMapping("/{orderId}")
+@PreAuthorize("hasPermission(#orderId, 'Order', 'DELETE') or hasRole('ADMIN')")
+public void deleteOrder(@PathVariable Long orderId) {
+    orderService.delete(orderId);
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 2603: API Key Authentication
+## ขั้นตอนที่ 2610: API Key Authentication {#api-key}
+
+### API Key Filter
 
 ```java
-// API Key model
-@Entity
-@Table(name = "api_keys")
-@Getter @Setter @Builder
-public class ApiKey {
-    @Id @GeneratedValue
-    private Long id;
-    private String keyHash;   // bcrypt hash
-    private String prefix;    // first 8 chars (for lookup)
-    private Long userId;
-    private String name;
-    private boolean active;
-    private LocalDateTime expiresAt;
-    @ElementCollection
-    private Set<String> scopes;  // read, write, admin
-}
+package com.example.security;
 
-// API Key filter
-@Component
-@RequiredArgsConstructor
-public class ApiKeyAuthFilter extends OncePerRequestFilter {
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.filter.OncePerRequestFilter;
+import java.io.IOException;
+
+public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String API_KEY_HEADER = "X-API-Key";
     private final ApiKeyService apiKeyService;
 
+    public ApiKeyAuthenticationFilter(ApiKeyService apiKeyService) {
+        this.apiKeyService = apiKeyService;
+    }
+
     @Override
     protected void doFilterInternal(
-        HttpServletRequest request,
-        HttpServletResponse response,
-        FilterChain filterChain
-    ) throws ServletException, IOException {
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain) throws ServletException, IOException {
 
         String apiKey = request.getHeader(API_KEY_HEADER);
 
-        if (apiKey != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-            try {
-                Authentication auth = apiKeyService.authenticate(apiKey);
-                SecurityContextHolder.getContext().setAuthentication(auth);
-            } catch (AuthenticationException e) {
-                response.setStatus(HttpStatus.UNAUTHORIZED.value());
-                response.getWriter().write("{\"error\":\"Invalid API key\"}");
-                return;
-            }
+        if (apiKey == null || apiKey.isBlank()) {
+            filterChain.doFilter(request, response);
+            return;
         }
+
+        ApiKeyDetails keyDetails = apiKeyService.validateApiKey(apiKey);
+
+        if (keyDetails == null) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json");
+            response.getWriter().write("""
+                {"error": "INVALID_API_KEY", "message": "Invalid or expired API key"}
+                """);
+            return;
+        }
+
+        ApiKeyAuthentication authentication = new ApiKeyAuthentication(
+            keyDetails.getClientId(),
+            keyDetails.getAuthorities(),
+            apiKey
+        );
+        authentication.setAuthenticated(true);
+
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        apiKeyService.recordUsage(keyDetails.getKeyId(), request.getRequestURI());
 
         filterChain.doFilter(request, response);
     }
 }
+```
 
-// API Key service
+### API Key Authentication Token
+
+```java
+package com.example.security;
+
+import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
+import java.util.Collection;
+
+public class ApiKeyAuthentication extends AbstractAuthenticationToken {
+
+    private final String clientId;
+    private final String apiKey;
+
+    public ApiKeyAuthentication(String clientId,
+                                  Collection<? extends GrantedAuthority> authorities,
+                                  String apiKey) {
+        super(authorities);
+        this.clientId = clientId;
+        this.apiKey = apiKey;
+    }
+
+    @Override
+    public Object getCredentials() { return apiKey; }
+
+    @Override
+    public Object getPrincipal() { return clientId; }
+}
+```
+
+### API Key Service พร้อม Secure Hashing
+
+```java
+package com.example.security;
+
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
+import java.security.MessageDigest;
+import java.util.Base64;
+
 @Service
-@RequiredArgsConstructor
 public class ApiKeyService {
 
     private final ApiKeyRepository apiKeyRepository;
-    private final PasswordEncoder passwordEncoder;
+    private final ApiKeyUsageRepository usageRepository;
 
-    public Authentication authenticate(String rawKey) {
-        // Extract prefix (first 8 chars) for DB lookup
-        if (rawKey.length() < 8) throw new BadCredentialsException("Invalid API key format");
-        String prefix = rawKey.substring(0, 8);
+    @Cacheable(value = "api-keys", key = "#apiKey", unless = "#result == null")
+    public ApiKeyDetails validateApiKey(String apiKey) {
+        // Hash ก่อน lookup - ไม่เก็บ plain text ใน database
+        String hashedKey = hashApiKey(apiKey);
 
-        ApiKey apiKey = apiKeyRepository.findByPrefix(prefix)
-            .orElseThrow(() -> new BadCredentialsException("API key not found"));
-
-        if (!apiKey.isActive()) throw new DisabledException("API key is disabled");
-        if (apiKey.getExpiresAt() != null && apiKey.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new CredentialsExpiredException("API key expired");
-        }
-        if (!passwordEncoder.matches(rawKey, apiKey.getKeyHash())) {
-            throw new BadCredentialsException("Invalid API key");
-        }
-
-        List<GrantedAuthority> authorities = apiKey.getScopes().stream()
-            .map(scope -> new SimpleGrantedAuthority("SCOPE_" + scope))
-            .collect(Collectors.toList());
-
-        return new ApiKeyAuthentication(apiKey, authorities);
+        return apiKeyRepository.findByKeyHash(hashedKey)
+            .filter(key -> !key.isExpired())
+            .filter(key -> !key.isRevoked())
+            .map(key -> ApiKeyDetails.builder()
+                .keyId(key.getId())
+                .clientId(key.getClientId())
+                .clientName(key.getClientName())
+                .authorities(key.getPermissions().stream()
+                    .map(p -> (GrantedAuthority) () -> p)
+                    .collect(Collectors.toList()))
+                .rateLimit(key.getRateLimit())
+                .build())
+            .orElse(null);
     }
 
-    public ApiKeyCreationResult createApiKey(Long userId, String name, Set<String> scopes) {
-        String rawKey = generateSecureKey();
-        String prefix = rawKey.substring(0, 8);
-        String hash = passwordEncoder.encode(rawKey);
+    // สร้าง API key ใหม่ - return raw key ครั้งเดียวเท่านั้น
+    public GeneratedApiKey generateApiKey(String clientId, List<String> permissions) {
+        String rawKey = "sk_live_" + generateSecureRandom(32);
+        String hashedKey = hashApiKey(rawKey);
 
-        ApiKey key = ApiKey.builder()
-            .keyHash(hash)
-            .prefix(prefix)
-            .userId(userId)
-            .name(name)
-            .active(true)
-            .scopes(scopes)
-            .expiresAt(LocalDateTime.now().plusYears(1))
+        ApiKey apiKey = ApiKey.builder()
+            .clientId(clientId)
+            .keyHash(hashedKey)
+            .permissions(permissions)
+            .createdAt(Instant.now())
+            .expiresAt(Instant.now().plus(Duration.ofDays(365)))
+            .revoked(false)
             .build();
 
-        apiKeyRepository.save(key);
+        apiKeyRepository.save(apiKey);
 
-        // Return raw key ONCE - never stored in plain text
-        return new ApiKeyCreationResult(key.getId(), rawKey, prefix);
+        return new GeneratedApiKey(rawKey, apiKey.getId(),
+            "IMPORTANT: Save this key - it will not be shown again");
     }
 
-    private String generateSecureKey() {
-        byte[] bytes = new byte[32];
-        new SecureRandom().nextBytes(bytes);
+    public void revokeApiKey(Long keyId) {
+        apiKeyRepository.findById(keyId).ifPresent(key -> {
+            key.setRevoked(true);
+            key.setRevokedAt(Instant.now());
+            apiKeyRepository.save(key);
+        });
+    }
+
+    public void recordUsage(Long keyId, String endpoint) {
+        usageRepository.save(ApiKeyUsage.builder()
+            .keyId(keyId)
+            .endpoint(endpoint)
+            .timestamp(Instant.now())
+            .build());
+    }
+
+    private String hashApiKey(String apiKey) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(apiKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(hash);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to hash API key", e);
+        }
+    }
+
+    private String generateSecureRandom(int length) {
+        byte[] bytes = new byte[length];
+        new java.security.SecureRandom().nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 }
 ```
 
----
-
-## ขั้นตอนที่ 2604: Mutual TLS (mTLS)
+### API Key Management Endpoints
 
 ```java
-// Enable mTLS in Spring Boot
-// application.yml
-/*
-server:
-  ssl:
-    enabled: true
-    key-store: classpath:server.p12
-    key-store-password: ${SSL_KEYSTORE_PASSWORD}
-    key-store-type: PKCS12
-    trust-store: classpath:truststore.p12
-    trust-store-password: ${SSL_TRUSTSTORE_PASSWORD}
-    trust-store-type: PKCS12
-    client-auth: need  # require client certificate
-*/
+package com.example.controller;
 
-// Extract client certificate info in Spring Security
-@Configuration
-@RequiredArgsConstructor
-public class MtlsSecurityConfig {
+@RestController
+@RequestMapping("/api/admin/api-keys")
+@PreAuthorize("hasRole('ADMIN')")
+public class ApiKeyManagementController {
 
-    @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .x509(x509 -> x509
-                .subjectPrincipalRegex("CN=(.*?)(?:,|$)")
-                .userDetailsService(mtlsUserDetailsService())
-            )
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/internal/**").authenticated()
-                .anyRequest().permitAll()
-            );
-        return http.build();
+    private final ApiKeyService apiKeyService;
+
+    @PostMapping
+    public ResponseEntity<GeneratedApiKey> createApiKey(
+            @RequestBody CreateApiKeyRequest request) {
+        GeneratedApiKey generated = apiKeyService.generateApiKey(
+            request.getClientId(), request.getPermissions());
+        return ResponseEntity.status(HttpStatus.CREATED).body(generated);
     }
 
-    @Bean
-    public UserDetailsService mtlsUserDetailsService() {
-        return username -> {
-            // username is extracted from CN of client certificate
-            return User.withUsername(username)
-                .password("")
-                .roles("SERVICE")
-                .build();
-        };
+    @DeleteMapping("/{keyId}")
+    public ResponseEntity<Void> revokeApiKey(@PathVariable Long keyId) {
+        apiKeyService.revokeApiKey(keyId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping
+    public Page<ApiKeyInfo> listApiKeys(@RequestParam String clientId, Pageable pageable) {
+        return apiKeyService.listKeys(clientId, pageable);
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 2605: OAuth2 Token Introspection
+## ขั้นตอนที่ 2615: Mutual TLS (mTLS) {#mtls}
+
+### Application Properties สำหรับ mTLS
+
+```yaml
+# application.yml
+server:
+  port: 8443
+  ssl:
+    enabled: true
+    key-store: classpath:server-keystore.p12
+    key-store-password: ${SSL_KEYSTORE_PASSWORD}
+    key-store-type: PKCS12
+    key-alias: server
+    # mTLS - ต้องการ client certificate
+    client-auth: need  # need = required, want = optional
+    trust-store: classpath:trusted-clients.p12
+    trust-store-password: ${SSL_TRUSTSTORE_PASSWORD}
+    trust-store-type: PKCS12
+```
+
+### mTLS Authentication Filter
 
 ```java
-// Resource server with token introspection
+package com.example.security;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.web.filter.OncePerRequestFilter;
+import java.security.cert.X509Certificate;
+
+public class MutualTlsAuthenticationFilter extends OncePerRequestFilter {
+
+    private final ClientCertificateService certService;
+
+    @Override
+    protected void doFilterInternal(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain) throws Exception {
+
+        // ดึง client certificate จาก request
+        X509Certificate[] certs = (X509Certificate[]) request.getAttribute(
+            "jakarta.servlet.request.X509Certificate");
+
+        if (certs == null || certs.length == 0) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        X509Certificate clientCert = certs[0];
+
+        try {
+            clientCert.checkValidity();
+
+            String subjectDN = clientCert.getSubjectX500Principal().getName();
+            String clientId = extractCN(subjectDN);
+
+            ClientDetails client = certService.validateCertificate(
+                clientCert.getSerialNumber().toString(), clientId);
+
+            if (client == null) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.getWriter().write("{\"error\": \"CERTIFICATE_NOT_TRUSTED\"}");
+                return;
+            }
+
+            MtlsAuthentication auth = new MtlsAuthentication(
+                clientId, client.getAuthorities(), clientCert);
+            auth.setAuthenticated(true);
+            SecurityContextHolder.getContext().setAuthentication(auth);
+
+            filterChain.doFilter(request, response);
+
+        } catch (java.security.cert.CertificateExpiredException e) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.getWriter().write("{\"error\": \"CERTIFICATE_EXPIRED\"}");
+        }
+    }
+
+    private String extractCN(String subjectDN) {
+        for (String part : subjectDN.split(",")) {
+            part = part.trim();
+            if (part.startsWith("CN=")) return part.substring(3);
+        }
+        return subjectDN;
+    }
+}
+```
+
+### Certificate Generation Script
+
+```bash
+#!/bin/bash
+# generate-mtls-certs.sh
+
+# CA Certificate
+openssl req -new -x509 -keyout ca-key.pem -out ca-cert.pem -days 3650 \
+  -subj "/CN=Internal CA/O=Company/C=TH" -passout pass:capassword
+
+# Server Certificate
+openssl req -new -keyout server-key.pem -out server-req.pem \
+  -subj "/CN=api.company.com/O=Company/C=TH"
+openssl x509 -req -in server-req.pem -CA ca-cert.pem -CAkey ca-key.pem \
+  -CAcreateserial -out server-cert.pem -days 365 -passin pass:capassword
+
+# Client Certificate (สำหรับ service-a)
+openssl req -new -keyout service-a-key.pem -out service-a-req.pem \
+  -subj "/CN=service-a/O=Company/C=TH"
+openssl x509 -req -in service-a-req.pem -CA ca-cert.pem -CAkey ca-key.pem \
+  -CAcreateserial -out service-a-cert.pem -days 365 -passin pass:capassword
+
+# สร้าง PKCS12 Keystores
+openssl pkcs12 -export -in server-cert.pem -inkey server-key.pem \
+  -out server-keystore.p12 -name server -passout pass:serverpass
+
+# Trust Store บน Server (เก็บ CA cert เพื่อ trust client certs)
+keytool -import -alias ca -file ca-cert.pem \
+  -keystore trusted-clients.p12 -storetype PKCS12 \
+  -storepass trustpass -noprompt
+
+echo "Certificates generated successfully!"
+```
+
+---
+
+## ขั้นตอนที่ 2620: OAuth2 Token Introspection {#token-introspection}
+
+### Resource Server Configuration
+
+```java
+package com.example.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.web.SecurityFilterChain;
+
 @Configuration
-public class ResourceServerConfig {
+@EnableWebSecurity
+public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/actuator/health/**").permitAll()
+                .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .anyRequest().authenticated()
+            )
             .oauth2ResourceServer(oauth2 -> oauth2
                 .opaqueToken(opaque -> opaque
-                    .introspectionUri("https://auth-server/oauth2/introspect")
-                    .introspectionClientCredentials("client-id", "client-secret")
+                    .introspectionUri("https://auth-server.com/oauth2/introspect")
+                    .introspectionClientCredentials("resource-server", "secret")
                 )
             );
         return http.build();
     }
 }
+```
 
-// Custom OpaqueTokenIntrospector to add extra claims
+```yaml
+# application.yml
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        opaquetoken:
+          introspection-uri: https://auth-server.com/oauth2/introspect
+          client-id: resource-server-client
+          client-secret: ${OAUTH2_CLIENT_SECRET}
+```
+
+### Caching Token Introspector
+
+```java
+package com.example.security;
+
+import org.springframework.security.oauth2.core.OAuth2AuthenticatedPrincipal;
+import org.springframework.security.oauth2.server.resource.introspection.OpaqueTokenIntrospector;
+import org.springframework.security.oauth2.server.resource.introspection.SpringOpaqueTokenIntrospector;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Component;
+
+// Cache introspection results เพื่อลด calls ไปยัง auth server
 @Component
-@RequiredArgsConstructor
-public class CustomOpaqueTokenIntrospector implements OpaqueTokenIntrospector {
+public class CachingTokenIntrospector implements OpaqueTokenIntrospector {
 
     private final SpringOpaqueTokenIntrospector delegate;
-    private final UserRepository userRepository;
+    private final UserEnrichmentService enrichmentService;
 
     @Override
+    @Cacheable(
+        value = "token-introspection",
+        key = "#token",
+        unless = "#result == null"
+    )
     public OAuth2AuthenticatedPrincipal introspect(String token) {
+        // ตรวจสอบ token กับ authorization server
         OAuth2AuthenticatedPrincipal principal = delegate.introspect(token);
 
-        // Enrich with user info from our DB
-        String username = principal.getAttribute("username");
-        User user = userRepository.findByUsername(username)
-            .orElseThrow(() -> new OAuth2IntrospectionException("User not found"));
+        // Enrich ด้วย user info จาก database
+        String userId = principal.getName();
+        UserProfile profile = enrichmentService.getProfile(userId);
 
-        Map<String, Object> claims = new HashMap<>(principal.getAttributes());
-        claims.put("userId", user.getId());
-        claims.put("tenantId", user.getTenantId());
-        claims.put("roles", user.getRoles());
+        // สร้าง enriched principal
+        Map<String, Object> attributes = new HashMap<>(principal.getAttributes());
+        attributes.put("profile", profile);
+        attributes.put("permissions", enrichmentService.getPermissions(userId));
 
-        List<GrantedAuthority> authorities = user.getRoles().stream()
-            .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
-            .collect(Collectors.toList());
+        return new DefaultOAuth2AuthenticatedPrincipal(
+            userId, attributes, principal.getAuthorities());
+    }
+}
+```
 
-        return new DefaultOAuth2AuthenticatedPrincipal(username, claims, authorities);
+### ดึง Claims จาก Token
+
+```java
+package com.example.security;
+
+import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.core.OAuth2AuthenticatedPrincipal;
+import org.springframework.stereotype.Component;
+
+@Component
+public class SecurityContextHelper {
+
+    public String getCurrentUserId(Authentication auth) {
+        if (auth.getPrincipal() instanceof OAuth2AuthenticatedPrincipal p) {
+            return p.getName();
+        }
+        return auth.getName();
+    }
+
+    public String getTenantId(Authentication auth) {
+        if (auth.getPrincipal() instanceof OAuth2AuthenticatedPrincipal p) {
+            return p.getAttribute("tenant_id");
+        }
+        return null;
+    }
+
+    public List<String> getScopes(Authentication auth) {
+        if (auth.getPrincipal() instanceof OAuth2AuthenticatedPrincipal p) {
+            Object scopes = p.getAttribute("scope");
+            if (scopes instanceof String s) return Arrays.asList(s.split(" "));
+            if (scopes instanceof List<?> list) {
+                return list.stream().map(Object::toString).collect(Collectors.toList());
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    public boolean hasScope(Authentication auth, String requiredScope) {
+        return getScopes(auth).contains(requiredScope);
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 2606: Security Audit Logging
+## ขั้นตอนที่ 2625: Security Audit Logging {#audit-logging}
+
+### Spring Security Event Listeners
 
 ```java
-// Security audit event listener
+package com.example.audit;
+
+import org.springframework.context.event.EventListener;
+import org.springframework.security.authentication.event.*;
+import org.springframework.stereotype.Component;
+
 @Component
 @Slf4j
-public class SecurityAuditLogger implements ApplicationListener<AbstractAuthenticationEvent> {
+public class SecurityEventListener {
 
-    private final AuditLogRepository auditLogRepository;
-    private final HttpServletRequest request;
+    private final AuditService auditService;
+    private final LoginAttemptService loginAttemptService;
 
-    @Override
-    public void onApplicationEvent(AbstractAuthenticationEvent event) {
-        AuditLog log = AuditLog.builder()
-            .timestamp(LocalDateTime.now())
-            .eventType(event.getClass().getSimpleName())
-            .ipAddress(getClientIp())
-            .userAgent(request.getHeader("User-Agent"))
-            .build();
+    // Login สำเร็จ
+    @EventListener
+    public void onSuccess(AuthenticationSuccessEvent event) {
+        String username = event.getAuthentication().getName();
 
-        if (event instanceof AuthenticationSuccessEvent success) {
-            log.setUsername(success.getAuthentication().getName());
-            log.setSuccess(true);
-        } else if (event instanceof AbstractAuthenticationFailureEvent failure) {
-            log.setUsername(failure.getAuthentication().getName());
-            log.setSuccess(false);
-            log.setFailureReason(failure.getException().getMessage());
-        }
+        auditService.log(AuditEvent.builder()
+            .eventType("AUTH_LOGIN_SUCCESS")
+            .userId(username)
+            .severity(AuditSeverity.INFO)
+            .message("User authenticated successfully")
+            .build());
 
-        auditLogRepository.save(log);
-
-        if (!log.isSuccess()) {
-            log.error("SECURITY: Failed auth attempt for user={} ip={} reason={}",
-                log.getUsername(), log.getIpAddress(), log.getFailureReason());
-        }
+        // Reset failed attempts
+        loginAttemptService.loginSucceeded(username);
     }
 
-    private String getClientIp() {
-        String xff = request.getHeader("X-Forwarded-For");
-        return xff != null ? xff.split(",")[0].trim() : request.getRemoteAddr();
+    // Login ล้มเหลว
+    @EventListener
+    public void onFailure(AbstractAuthenticationFailureEvent event) {
+        String username = event.getAuthentication().getName();
+
+        auditService.log(AuditEvent.builder()
+            .eventType("AUTH_LOGIN_FAILURE")
+            .userId(username)
+            .severity(AuditSeverity.WARNING)
+            .message("Authentication failed: " + event.getException().getMessage())
+            .build());
+
+        loginAttemptService.loginFailed(username);
+    }
+
+    // Authorization denied
+    @EventListener
+    public void onAccessDenied(
+            org.springframework.security.access.event.AuthorizationFailureEvent event) {
+        String username = event.getAuthentication().getName();
+
+        auditService.log(AuditEvent.builder()
+            .eventType("AUTHZ_ACCESS_DENIED")
+            .userId(username)
+            .severity(AuditSeverity.WARNING)
+            .message("Access denied: " + event.getAccessDeniedException().getMessage())
+            .build());
     }
 }
+```
 
-// Custom audit annotation
+### @Audited Custom Annotation
+
+```java
+package com.example.audit;
+
+import java.lang.annotation.*;
+
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
+@Documented
 public @interface Audited {
     String action();
     String resource() default "";
+    AuditSeverity severity() default AuditSeverity.INFO;
+    boolean logResult() default false;
 }
+```
 
-// AOP for @Audited methods
+### Audit AOP Aspect
+
+```java
+package com.example.audit;
+
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
 @Aspect
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class AuditAspect {
 
-    private final AuditLogRepository auditLogRepository;
+    private final AuditService auditService;
 
     @Around("@annotation(audited)")
-    public Object audit(ProceedingJoinPoint pjp, Audited audited) throws Throwable {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        String username = auth != null ? auth.getName() : "anonymous";
+    public Object auditMethod(ProceedingJoinPoint pjp, Audited audited) throws Throwable {
+        String userId = getCurrentUserId();
+        long start = System.currentTimeMillis();
 
         try {
             Object result = pjp.proceed();
-            auditLogRepository.save(AuditLog.builder()
-                .username(username)
-                .action(audited.action())
+
+            auditService.log(AuditEvent.builder()
+                .eventType(audited.action())
+                .userId(userId)
                 .resource(audited.resource())
-                .success(true)
-                .timestamp(LocalDateTime.now())
+                .severity(audited.severity())
+                .status("SUCCESS")
+                .durationMs(System.currentTimeMillis() - start)
                 .build());
+
             return result;
+
         } catch (Exception e) {
-            auditLogRepository.save(AuditLog.builder()
-                .username(username)
-                .action(audited.action())
+            auditService.log(AuditEvent.builder()
+                .eventType(audited.action() + "_FAILED")
+                .userId(userId)
                 .resource(audited.resource())
-                .success(false)
-                .failureReason(e.getMessage())
-                .timestamp(LocalDateTime.now())
+                .severity(AuditSeverity.ERROR)
+                .status("FAILURE")
+                .errorMessage(e.getMessage())
+                .durationMs(System.currentTimeMillis() - start)
                 .build());
             throw e;
         }
     }
+
+    private String getCurrentUserId() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null ? auth.getName() : "anonymous";
+    }
+}
+```
+
+### Audit Service
+
+```java
+package com.example.audit;
+
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Service;
+
+@Service
+@Slf4j
+public class AuditService {
+
+    private final AuditLogRepository auditLogRepository;
+    private final KafkaTemplate<String, AuditEvent> kafkaTemplate;
+
+    public void log(AuditEvent event) {
+        enrichWithRequestContext(event);
+
+        AuditLog auditLog = AuditLog.builder()
+            .eventType(event.getEventType())
+            .userId(event.getUserId())
+            .resource(event.getResource())
+            .severity(event.getSeverity().name())
+            .status(event.getStatus())
+            .message(event.getMessage())
+            .errorMessage(event.getErrorMessage())
+            .ipAddress(event.getIpAddress())
+            .userAgent(event.getUserAgent())
+            .durationMs(event.getDurationMs())
+            .timestamp(Instant.now())
+            .build();
+
+        auditLogRepository.save(auditLog);
+
+        // ส่งไป Kafka สำหรับ SIEM
+        kafkaTemplate.send("security-audit-events", event.getUserId(), event);
+
+        // Alert สำหรับ critical events
+        if (event.getSeverity() == AuditSeverity.CRITICAL) {
+            log.error("CRITICAL SECURITY EVENT: {}", event);
+        }
+    }
+
+    private void enrichWithRequestContext(AuditEvent event) {
+        try {
+            var attrs = (ServletRequestAttributes)
+                RequestContextHolder.getRequestAttributes();
+            if (attrs != null) {
+                HttpServletRequest request = attrs.getRequest();
+                String xff = request.getHeader("X-Forwarded-For");
+                event.setIpAddress(xff != null ? xff.split(",")[0].trim()
+                                               : request.getRemoteAddr());
+                event.setUserAgent(request.getHeader("User-Agent"));
+                event.setRequestPath(request.getRequestURI());
+            }
+        } catch (Exception ignored) {}
+    }
+}
+```
+
+### ใช้ @Audited Annotation
+
+```java
+package com.example.service;
+
+import com.example.audit.Audited;
+import com.example.audit.AuditSeverity;
+
+@Service
+public class UserManagementService {
+
+    @Audited(action = "USER_ROLE_CHANGE", resource = "user",
+             severity = AuditSeverity.WARNING)
+    public void changeUserRole(String userId, String newRole) {
+        userRepository.updateRole(userId, newRole);
+    }
+
+    @Audited(action = "USER_DELETE", resource = "user",
+             severity = AuditSeverity.CRITICAL)
+    public void deleteUser(String userId) {
+        userRepository.deleteById(userId);
+    }
+
+    @Audited(action = "DATA_EXPORT", resource = "customer-data")
+    public byte[] exportData(String customerId) {
+        return dataExportService.export(customerId);
+    }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 2607: CORS Configuration
+## ขั้นตอนที่ 2630: CORS Configuration {#cors}
+
+### Comprehensive CORS Setup
 
 ```java
+package com.example.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
 @Configuration
 public class CorsConfig {
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration config = new CorsConfiguration();
+        // Public API CORS
+        CorsConfiguration publicConfig = new CorsConfiguration();
+        publicConfig.setAllowedOrigins(List.of(
+            "https://app.company.com",
+            "https://admin.company.com"
+        ));
+        publicConfig.setAllowedOriginPatterns(List.of("https://*.company.com"));
+        publicConfig.setAllowedMethods(Arrays.asList(
+            "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        publicConfig.setAllowedHeaders(Arrays.asList(
+            "Authorization", "Content-Type", "X-Requested-With",
+            "X-API-Key", "X-Request-ID", "Accept", "Origin"));
+        publicConfig.setExposedHeaders(Arrays.asList(
+            "X-Request-ID", "X-Total-Count", "X-Rate-Limit-Remaining"));
+        publicConfig.setAllowCredentials(true);
+        publicConfig.setMaxAge(3600L);
 
-        // Production: specific origins only
-        config.setAllowedOrigins(List.of(
-            "https://myapp.com",
-            "https://admin.myapp.com"
-        ));
-
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
-        config.setAllowedHeaders(List.of(
-            "Authorization",
-            "Content-Type",
-            "X-Request-ID",
-            "X-Tenant-ID"
-        ));
-        config.setExposedHeaders(List.of(
-            "X-Total-Count",
-            "X-Request-ID",
-            "X-RateLimit-Remaining"
-        ));
-        config.setAllowCredentials(true);
-        config.setMaxAge(3600L);  // Preflight cache 1 hour
+        // Internal API CORS (stricter)
+        CorsConfiguration internalConfig = new CorsConfiguration();
+        internalConfig.setAllowedOrigins(List.of("https://internal.company.com"));
+        internalConfig.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE"));
+        internalConfig.setAllowedHeaders(List.of("*"));
+        internalConfig.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/api/**", config);
-
-        // Public endpoints: allow all origins
-        CorsConfiguration publicConfig = new CorsConfiguration();
-        publicConfig.setAllowedOrigins(List.of("*"));
-        publicConfig.setAllowedMethods(List.of("GET"));
-        source.registerCorsConfiguration("/api/public/**", publicConfig);
+        source.registerCorsConfiguration("/api/**", publicConfig);
+        source.registerCorsConfiguration("/internal/**", internalConfig);
 
         return source;
     }
 }
 ```
 
----
-
-## ขั้นตอนที่ 2608-2640: Complete Security Setup Summary
+### Complete SecurityFilterChain
 
 ```java
-// Complete SecurityFilterChain for production
+package com.example.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
 @Configuration
 @EnableWebSecurity
-@EnableMethodSecurity
-@RequiredArgsConstructor
-public class SecurityConfig {
+public class SecurityFilterChainConfig {
 
-    private final JwtAuthFilter jwtAuthFilter;
-    private final ApiKeyAuthFilter apiKeyAuthFilter;
-    private final CorsConfigurationSource corsConfigurationSource;
+    private final ApiKeyAuthenticationFilter apiKeyFilter;
+    private final CorsConfigurationSource corsSource;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-            // Disable CSRF (stateless API)
-            .csrf(AbstractHttpConfigurer::disable)
-
-            // CORS
-            .cors(cors -> cors.configurationSource(corsConfigurationSource))
-
-            // Session management: stateless
+            .cors(cors -> cors.configurationSource(corsSource))
+            .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            )
-
-            // Security headers
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .headers(headers -> headers
-                .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
-                .contentTypeOptions(withDefaults())
+                .contentTypeOptions(Customizer.withDefaults())
+                .frameOptions(frame -> frame.deny())
                 .httpStrictTransportSecurity(hsts -> hsts
-                    .maxAgeInSeconds(31536000)
                     .includeSubDomains(true)
-                )
+                    .maxAgeInSeconds(31536000))
                 .contentSecurityPolicy(csp -> csp
-                    .policyDirectives("default-src 'self'")
-                )
+                    .policyDirectives("default-src 'self'"))
             )
-
-            // Authorization rules
             .authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
                 .requestMatchers("/api/v1/auth/**").permitAll()
-                .requestMatchers("/api/v1/public/**").permitAll()
-                .requestMatchers("/actuator/health").permitAll()
-                .requestMatchers("/actuator/**").hasRole("ADMIN")
-                .requestMatchers(HttpMethod.GET, "/api/v1/products/**").permitAll()
-                .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.DELETE, "/api/**")
+                    .hasAnyRole("ADMIN", "MANAGER")
                 .anyRequest().authenticated()
             )
-
-            // Exception handling
+            .oauth2ResourceServer(oauth2 -> oauth2
+                .opaqueToken(opaque -> opaque
+                    .introspectionUri("https://auth.company.com/introspect")
+                    .introspectionClientCredentials("resource-server", "secret"))
+            )
+            .addFilterBefore(apiKeyFilter, UsernamePasswordAuthenticationFilter.class)
             .exceptionHandling(ex -> ex
                 .authenticationEntryPoint((req, res, e) -> {
-                    res.setStatus(HttpStatus.UNAUTHORIZED.value());
+                    res.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                     res.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                    res.getWriter().write("{\"error\":\"Unauthorized\",\"message\":\"" + e.getMessage() + "\"}");
+                    res.getWriter().write(
+                        "{\"error\":\"UNAUTHORIZED\",\"message\":\"Authentication required\"}");
                 })
                 .accessDeniedHandler((req, res, e) -> {
-                    res.setStatus(HttpStatus.FORBIDDEN.value());
+                    res.setStatus(HttpServletResponse.SC_FORBIDDEN);
                     res.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                    res.getWriter().write("{\"error\":\"Forbidden\",\"message\":\"Access denied\"}");
+                    res.getWriter().write(
+                        "{\"error\":\"FORBIDDEN\",\"message\":\"Insufficient permissions\"}");
                 })
-            )
-
-            // Add JWT filter before username/password filter
-            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
-            // Add API key filter (for machine-to-machine)
-            .addFilterBefore(apiKeyAuthFilter, JwtAuthFilter.class);
+            );
 
         return http.build();
     }
+}
+```
 
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder(12);
+---
+
+## ขั้นตอนที่ 2635: Security Testing
+
+### Integration Tests
+
+```java
+package com.example.security;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.http.HttpMethod;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class SecurityIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void shouldDenyAccessWithoutAuth() throws Exception {
+        mockMvc.perform(get("/api/orders"))
+            .andExpect(status().isUnauthorized());
     }
 
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
-        return config.getAuthenticationManager();
+    @Test
+    @WithMockUser(roles = "USER")
+    void shouldAllowAuthenticatedUser() throws Exception {
+        mockMvc.perform(get("/api/orders"))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(roles = "USER")
+    void shouldDenyNonAdminToAdminEndpoint() throws Exception {
+        mockMvc.perform(get("/api/admin/users"))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void shouldAllowAdminAccess() throws Exception {
+        mockMvc.perform(get("/api/admin/users"))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldAcceptValidApiKey() throws Exception {
+        mockMvc.perform(get("/api/orders")
+                .header("X-API-Key", "sk_live_validtestkey"))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldRejectInvalidApiKey() throws Exception {
+        mockMvc.perform(get("/api/orders")
+                .header("X-API-Key", "invalid-key"))
+            .andExpect(status().isUnauthorized())
+            .andExpect(jsonPath("$.error").value("INVALID_API_KEY"));
+    }
+
+    @Test
+    @WithMockUser(username = "user1", roles = "USER")
+    void shouldDenyAccessToOtherUsersOrder() throws Exception {
+        // Order 999 belongs to user2
+        mockMvc.perform(get("/api/orders/999"))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldHandleCorsPreflightRequest() throws Exception {
+        mockMvc.perform(options("/api/orders")
+                .header("Origin", "https://app.company.com")
+                .header("Access-Control-Request-Method", "GET"))
+            .andExpect(status().isOk())
+            .andExpect(header().string(
+                "Access-Control-Allow-Origin", "https://app.company.com"))
+            .andExpect(header().exists("Access-Control-Allow-Methods"));
+    }
+
+    @Test
+    void shouldRejectCorsFromUnknownOrigin() throws Exception {
+        mockMvc.perform(options("/api/orders")
+                .header("Origin", "https://evil-site.com")
+                .header("Access-Control-Request-Method", "GET"))
+            .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
     }
 }
 ```
+
+### Method Security Tests
+
+```java
+package com.example.security;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.test.context.support.WithMockUser;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+@SpringBootTest
+class MethodSecurityTest {
+
+    @Autowired
+    private OrderService orderService;
+
+    @Test
+    @WithMockUser(roles = "USER")
+    void shouldDenyNonAdminFromGettingAllOrders() {
+        assertThatThrownBy(() -> orderService.getAllOrders())
+            .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    @WithMockUser(username = "customer1", roles = "USER")
+    void shouldAllowUserToGetTheirOwnOrders() {
+        List<Order> orders = orderService.getOrdersByCustomer("customer1");
+        assertThat(orders).allMatch(o -> o.getCustomerId().equals("customer1"));
+    }
+
+    @Test
+    @WithMockUser(username = "customer1", roles = "USER")
+    void shouldDenyUserFromGettingOthersOrders() {
+        assertThatThrownBy(() -> orderService.getOrdersByCustomer("customer2"))
+            .isInstanceOf(AccessDeniedException.class);
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 2638: Security Headers และ Best Practices
+
+### Security Headers Configuration
+
+```java
+package com.example.config;
+
+@Configuration
+public class SecurityHeadersConfig {
+
+    @Bean
+    public SecurityFilterChain headersChain(HttpSecurity http) throws Exception {
+        http.headers(headers -> headers
+            // X-Content-Type-Options
+            .contentTypeOptions(Customizer.withDefaults())
+
+            // X-Frame-Options
+            .frameOptions(frame -> frame.deny())
+
+            // Strict-Transport-Security
+            .httpStrictTransportSecurity(hsts -> hsts
+                .includeSubDomains(true)
+                .maxAgeInSeconds(31536000)  // 1 year
+                .preload(true))
+
+            // Content-Security-Policy
+            .contentSecurityPolicy(csp -> csp
+                .policyDirectives(
+                    "default-src 'self'; " +
+                    "script-src 'self' 'unsafe-inline' https://cdn.company.com; " +
+                    "style-src 'self' 'unsafe-inline'; " +
+                    "img-src 'self' data: https:; " +
+                    "font-src 'self' https://fonts.googleapis.com; " +
+                    "connect-src 'self' https://api.company.com; " +
+                    "frame-ancestors 'none'; " +
+                    "form-action 'self'"
+                ))
+
+            // Permissions-Policy
+            .permissionsPolicy(pp -> pp
+                .policy("geolocation=(), microphone=(), camera=()"))
+
+            // Referrer-Policy
+            .referrerPolicy(rp -> rp
+                .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+        );
+
+        return http.build();
+    }
+}
+```
+
+### Login Attempt Tracking
+
+```java
+package com.example.security;
+
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.CachePut;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
+
+@Service
+public class LoginAttemptService {
+
+    private static final int MAX_ATTEMPTS = 5;
+    private static final Duration LOCKOUT_DURATION = Duration.ofMinutes(15);
+
+    private final StringRedisTemplate redisTemplate;
+
+    public void loginSucceeded(String username) {
+        // Reset failed attempt counter
+        redisTemplate.delete("login_attempts:" + username);
+    }
+
+    public void loginFailed(String username) {
+        String key = "login_attempts:" + username;
+        Long attempts = redisTemplate.opsForValue().increment(key);
+
+        if (attempts != null && attempts == 1) {
+            // ตั้ง expiry ครั้งแรกที่ fail
+            redisTemplate.expire(key, LOCKOUT_DURATION);
+        }
+
+        if (attempts != null && attempts >= MAX_ATTEMPTS) {
+            // Lock account
+            redisTemplate.opsForValue().set(
+                "account_locked:" + username, "true", LOCKOUT_DURATION);
+
+            auditService.log(AuditEvent.builder()
+                .eventType("ACCOUNT_LOCKED")
+                .userId(username)
+                .severity(AuditSeverity.WARNING)
+                .message("Account locked after " + attempts + " failed attempts")
+                .build());
+        }
+    }
+
+    public boolean isLocked(String username) {
+        return Boolean.TRUE.toString().equals(
+            redisTemplate.opsForValue().get("account_locked:" + username));
+    }
+
+    public int getFailedAttempts(String username) {
+        String val = redisTemplate.opsForValue().get("login_attempts:" + username);
+        return val != null ? Integer.parseInt(val) : 0;
+    }
+}
+```
+
+---
+
+## สรุปสิ่งที่เรียนรู้
+
+ใน Part นี้เราได้เรียนรู้:
+
+1. **Method Security** - `@PreAuthorize`, `@PostAuthorize`, `@Secured`, `@RolesAllowed` และ filtering annotations
+2. **Custom Security Expressions** - สร้าง `@securityService` bean สำหรับ complex authorization logic
+3. **PermissionEvaluator** - ใช้ `hasPermission()` สำหรับ domain object security
+4. **API Key Authentication** - การ implement API key ที่ปลอดภัยด้วย SHA-256 hashing
+5. **Mutual TLS (mTLS)** - ตั้งค่า client certificate authentication สำหรับ service-to-service
+6. **OAuth2 Token Introspection** - ตรวจสอบ token กับ authorization server พร้อม caching
+7. **Security Audit Logging** - บันทึก security events ด้วย AOP และส่งไป Kafka
+8. **CORS Configuration** - ตั้งค่า CORS อย่างปลอดภัยสำหรับ multiple origins
+9. **Security Headers** - CSP, HSTS, Referrer-Policy, Permissions-Policy
+10. **Login Attempt Tracking** - ป้องกัน brute force ด้วย Redis
+
+### Security Best Practices Checklist
+- ✓ ใช้ `@PreAuthorize` แทน if-else ใน business logic
+- ✓ Hash API keys ด้วย SHA-256 ก่อนบันทึกลง database
+- ✓ Audit log ทุก sensitive operations
+- ✓ กำหนด CORS origins แบบ explicit - ไม่ใช้ `*` ใน production
+- ✓ เปิด HTTPS + HSTS สำหรับทุก production environment
+- ✓ กำหนด Content-Security-Policy เพื่อป้องกัน XSS
+- ✓ ใช้ Principle of Least Privilege - grant minimal permissions
+- ✓ Test security ด้วย integration tests เสมอ
+- ✓ Monitor failed login attempts และ lock account เมื่อ threshold ถึง
 
 ---
 
