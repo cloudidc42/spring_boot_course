@@ -2,296 +2,208 @@
 ## ขั้นตอนที่ 3361-3400
 
 **ระดับ:** World-Class (ระดับโลก)
-**เวลาเรียน:** 6-8 ชั่วโมง
-**เป้าหมาย:** เรียนรู้การนำ Machine Learning มาผสาน Spring Boot application ครอบคลุมการเรียก Python ML services ผ่าน REST, ONNX Model inference ใน Java, Feature store patterns, A/B testing สำหรับ ML models, Model versioning, และ Recommendation engine
+**เวลาเรียน:** 8-10 ชั่วโมง
+**เป้าหมาย:** เรียนรู้การ integrate Machine Learning กับ Spring Boot ครอบคลุม REST/gRPC calls ไป Python ML services, ONNX model inference ใน Java, Feature store patterns, A/B testing, Model versioning, Recommendation engine และ Real-time feature computation
 
 ---
 
-## ขั้นตอนที่ 3361: ภาพรวม ML Integration Patterns
+## ขั้นตอนที่ 3361: Calling Python ML Services via REST/gRPC
 
-มี 3 รูปแบบหลักในการนำ ML มาใช้กับ Spring Boot:
+### Architecture Overview
 
 ```
-Pattern 1: Sidecar ML Service
-Spring Boot App ←REST→ Python FastAPI ML Service
-  장점: ยืดหยุ่น, ใช้ library ML ได้เต็มที่
-  ข้อเสีย: Network overhead, ดูแลอีก service
-
-Pattern 2: ONNX Inference ใน Java
-Spring Boot App → ONNX Runtime (Java) → Model file
-  장점: ไม่มี network hop, latency ต่ำ
-  ข้อเสีย: Model types จำกัด
-
-Pattern 3: Cloud ML Service
-Spring Boot App ←API→ AWS SageMaker / Google Vertex AI
-  장점: Managed, scale อัตโนมัติ
-  ข้อเสีย: ค่าใช้จ่ายสูง, vendor lock-in
+Spring Boot App → REST/gRPC → Python ML Service (FastAPI/Flask)
+                            → ONNX Runtime (In-process)
+                            → Feature Store → Online Features
 ```
 
-## ขั้นตอนที่ 3362: Python ML Service ด้วย FastAPI
-
-สร้าง Python service สำหรับ ML inference ที่ Spring Boot เรียกผ่าน REST
+### Python FastAPI ML Service
 
 ```python
-# ml-service/main.py
+# ml_service/main.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
 import numpy as np
 import joblib
-import torch
-from transformers import pipeline
+from typing import List, Optional
 
-app = FastAPI(title="ShopHub ML Service", version="1.0.0")
+app = FastAPI(title="ShopHub ML Service")
 
-# โหลด models ตอน startup
-class ModelRegistry:
-    def __init__(self):
-        self.recommendation_model = None
-        self.sentiment_model = None
-        self.fraud_model = None
-        
-    def load_models(self):
-        print("Loading ML models...")
-        # โหลด recommendation model
-        self.recommendation_model = joblib.load("models/recommendation_v2.pkl")
-        
-        # โหลด sentiment model
-        self.sentiment_model = pipeline(
-            "sentiment-analysis",
-            model="nlptown/bert-base-multilingual-uncased-sentiment",
-            device="cpu"
-        )
-        
-        # โหลด fraud detection model
-        self.fraud_model = joblib.load("models/fraud_detection_v1.pkl")
-        print("All models loaded!")
+# Load models on startup
+product_ranker = joblib.load("models/product_ranker_v2.pkl")
+fraud_detector = joblib.load("models/fraud_detector_v1.pkl")
 
-model_registry = ModelRegistry()
-
-@app.on_event("startup")
-async def startup():
-    model_registry.load_models()
-
-# Request/Response schemas
 class RecommendationRequest(BaseModel):
-    user_id: int
-    user_features: List[float]
-    product_history: List[int]
-    context: dict
+    user_id: str
+    context_product_ids: List[str] = []
+    limit: int = 10
 
 class RecommendationResponse(BaseModel):
-    user_id: int
-    recommended_products: List[int]
+    user_id: str
+    recommended_product_ids: List[str]
     scores: List[float]
     model_version: str
 
-class SentimentRequest(BaseModel):
-    texts: List[str]
-    language: str = "th"
-
-class FraudRequest(BaseModel):
-    order_id: str
-    amount: float
-    user_age_days: int
-    distinct_item_count: int
-    shipping_match_billing: bool
-    hour_of_day: int
-    country: str
-
-# Endpoints
-@app.post("/recommend", response_model=RecommendationResponse)
-async def recommend_products(request: RecommendationRequest):
+@app.post("/recommendations", response_model=RecommendationResponse)
+async def get_recommendations(request: RecommendationRequest):
     try:
-        model = model_registry.recommendation_model
+        # ดึง user features จาก feature store
+        user_features = get_user_features(request.user_id)
         
-        features = np.array(request.user_features + request.product_history)
-        scores = model.predict_proba(features.reshape(1, -1))[0]
+        # Score candidate products
+        scores = product_ranker.predict([user_features])
         
-        # ดึง top-10 products
-        top_indices = np.argsort(scores)[::-1][:10]
-        recommended = top_indices.tolist()
-        top_scores = scores[top_indices].tolist()
+        # Sort และ return top-N
+        top_indices = np.argsort(scores[0])[-request.limit:][::-1]
         
         return RecommendationResponse(
             user_id=request.user_id,
-            recommended_products=recommended,
-            scores=top_scores,
-            model_version="v2.0"
+            recommended_product_ids=[candidate_products[i] for i in top_indices],
+            scores=[float(scores[0][i]) for i in top_indices],
+            model_version="v2.1.0"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/sentiment")
-async def analyze_sentiment(request: SentimentRequest):
-    results = model_registry.sentiment_model(request.texts)
-    return {
-        "results": [
-            {"text": text, "label": r["label"], "score": r["score"]}
-            for text, r in zip(request.texts, results)
-        ]
-    }
-
 @app.post("/fraud-detection")
-async def detect_fraud(request: FraudRequest):
-    features = [
-        request.amount,
-        request.user_age_days,
-        request.distinct_item_count,
-        1 if request.shipping_match_billing else 0,
-        request.hour_of_day,
-        hash(request.country) % 100
-    ]
-    
-    model = model_registry.fraud_model
-    fraud_prob = model.predict_proba([features])[0][1]
-    is_fraud = fraud_prob > 0.7
+async def detect_fraud(transaction: dict):
+    features = extract_transaction_features(transaction)
+    probability = fraud_detector.predict_proba([features])[0][1]
     
     return {
-        "order_id": request.order_id,
-        "fraud_probability": float(fraud_prob),
-        "is_fraud": is_fraud,
-        "risk_level": "HIGH" if fraud_prob > 0.7 else "MEDIUM" if fraud_prob > 0.4 else "LOW"
+        "is_fraud": probability > 0.7,
+        "fraud_probability": float(probability),
+        "risk_level": "HIGH" if probability > 0.7 else "MEDIUM" if probability > 0.3 else "LOW"
     }
-
-@app.get("/health")
-async def health():
-    return {"status": "healthy", "models_loaded": True}
 ```
 
-## ขั้นตอนที่ 3363: Spring Boot ML Client
+### Spring Boot ML Client
 
 ```java
-// ml-service/src/main/java/com/shophub/ml/client/MLServiceClient.java
-package com.shophub.ml.client;
+// ml/MlServiceClient.java
+package com.example.shophub.ml;
 
-import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
-@FeignClient(
-    name = "ml-service",
-    url = "${ml.service.url:http://ml-service:8000}",
-    fallback = MLServiceClientFallback.class
-)
-public interface MLServiceClient {
+@Component
+public class MlServiceClient {
+    
+    private final WebClient webClient;
+    
+    public MlServiceClient(WebClient.Builder webClientBuilder,
+                            @Value("${ml.service.url}") String mlServiceUrl) {
+        this.webClient = webClientBuilder
+            .baseUrl(mlServiceUrl)
+            .defaultHeader("Content-Type", "application/json")
+            .build();
+    }
+    
+    public Mono<RecommendationResponse> getRecommendations(String userId, 
+                                                             List<String> contextProductIds,
+                                                             int limit) {
+        return webClient.post()
+            .uri("/recommendations")
+            .bodyValue(new RecommendationRequest(userId, contextProductIds, limit))
+            .retrieve()
+            .onStatus(HttpStatusCode::is5xxServerError, response ->
+                Mono.error(new MlServiceException("ML service error: " + response.statusCode())))
+            .bodyToMono(RecommendationResponse.class)
+            .timeout(Duration.ofSeconds(2)) // ML inference timeout
+            .doOnError(e -> log.error("ML service error for user {}: {}", userId, e.getMessage()));
+    }
+    
+    public Mono<FraudDetectionResult> detectFraud(Transaction transaction) {
+        return webClient.post()
+            .uri("/fraud-detection")
+            .bodyValue(transaction)
+            .retrieve()
+            .bodyToMono(FraudDetectionResult.class)
+            .timeout(Duration.ofMillis(500)) // Fraud check ต้องเร็ว
+            .onErrorReturn(FraudDetectionResult.defaultAllow()); // Fail-safe
+    }
+}
+```
 
-    @PostMapping("/recommend")
-    RecommendationResponse getRecommendations(@RequestBody RecommendationRequest request);
+### gRPC Integration
 
-    @PostMapping("/sentiment")
-    SentimentResponse analyzeSentiment(@RequestBody SentimentRequest request);
+```protobuf
+// proto/ml_service.proto
+syntax = "proto3";
+package com.example.shophub.ml;
 
-    @PostMapping("/fraud-detection")
-    FraudDetectionResponse detectFraud(@RequestBody FraudDetectionRequest request);
+service RecommendationService {
+    rpc GetRecommendations(RecommendationRequest) returns (RecommendationResponse);
+    rpc StreamRecommendations(RecommendationRequest) returns (stream ProductScore);
+}
+
+message RecommendationRequest {
+    string user_id = 1;
+    repeated string context_product_ids = 2;
+    int32 limit = 3;
+    map<string, string> context = 4;  // Additional context
+}
+
+message RecommendationResponse {
+    string user_id = 1;
+    repeated ProductScore products = 2;
+    string model_version = 3;
+    int64 latency_ms = 4;
+}
+
+message ProductScore {
+    string product_id = 1;
+    float score = 2;
+    repeated string reasons = 3;
 }
 ```
 
 ```java
-// ml-service/src/main/java/com/shophub/ml/dto/RecommendationRequest.java
-package com.shophub.ml.dto;
-
-import lombok.Builder;
-import lombok.Data;
-import java.util.List;
-import java.util.Map;
-
-@Data
-@Builder
-public class RecommendationRequest {
-    private Long userId;
-    private List<Double> userFeatures;
-    private List<Long> productHistory;
-    private Map<String, Object> context;
-}
-```
-
-```java
-// ml-service/src/main/java/com/shophub/ml/dto/RecommendationResponse.java
-package com.shophub.ml.dto;
-
-import lombok.Data;
-import java.util.List;
-
-@Data
-public class RecommendationResponse {
-    private Long userId;
-    private List<Long> recommendedProducts;
-    private List<Double> scores;
-    private String modelVersion;
-}
-```
-
-```java
-// RecommendationService.java - ใช้ ML service ใน product recommendation
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class RecommendationService {
-
-    private final MLServiceClient mlClient;
-    private final UserFeatureService userFeatureService;
-    private final ProductRepository productRepository;
-    private final CacheManager cacheManager;
-
-    public List<ProductDto> getPersonalizedRecommendations(Long userId, int limit) {
-        // ดึง cache ก่อน
-        String cacheKey = "recommendations:" + userId;
-        Cache cache = cacheManager.getCache("recommendations");
+// ml/grpc/RecommendationGrpcClient.java
+@Component
+public class RecommendationGrpcClient {
+    
+    private final RecommendationServiceGrpc.RecommendationServiceBlockingStub blockingStub;
+    private final RecommendationServiceGrpc.RecommendationServiceStub asyncStub;
+    
+    public RecommendationGrpcClient(@Value("${ml.grpc.host}") String host,
+                                     @Value("${ml.grpc.port}") int port) {
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(host, port)
+            .usePlaintext()
+            .keepAliveTime(30, TimeUnit.SECONDS)
+            .keepAliveTimeout(5, TimeUnit.SECONDS)
+            .build();
         
-        if (cache != null) {
-            Cache.ValueWrapper cached = cache.get(cacheKey);
-            if (cached != null) {
-                return (List<ProductDto>) cached.get();
-            }
-        }
-
-        // ดึง user features จาก Feature Store
-        UserFeatures features = userFeatureService.getUserFeatures(userId);
+        this.blockingStub = RecommendationServiceGrpc.newBlockingStub(channel)
+            .withDeadlineAfter(2, TimeUnit.SECONDS);
+        this.asyncStub = RecommendationServiceGrpc.newStub(channel);
+    }
+    
+    public List<ProductScore> getRecommendations(String userId, int limit) {
+        RecommendationRequest request = RecommendationRequest.newBuilder()
+            .setUserId(userId)
+            .setLimit(limit)
+            .build();
         
-        RecommendationRequest request = RecommendationRequest.builder()
-                .userId(userId)
-                .userFeatures(features.toVector())
-                .productHistory(features.getRecentlyViewedProducts())
-                .context(Map.of(
-                        "time_of_day", LocalTime.now().getHour(),
-                        "day_of_week", LocalDate.now().getDayOfWeek().name(),
-                        "session_count", features.getSessionCount()
-                ))
-                .build();
-
-        RecommendationResponse response;
         try {
-            response = mlClient.getRecommendations(request);
-        } catch (Exception e) {
-            log.error("ML service unavailable, using fallback recommendations", e);
-            return getFallbackRecommendations(userId, limit);
+            RecommendationResponse response = blockingStub.getRecommendations(request);
+            return response.getProductsList();
+        } catch (StatusRuntimeException e) {
+            log.error("gRPC call failed: {}", e.getStatus());
+            return Collections.emptyList();
         }
-
-        // ดึง product details
-        List<ProductDto> products = productRepository.findAllById(
-                response.getRecommendedProducts().subList(0, Math.min(limit, response.getRecommendedProducts().size()))
-        ).stream().map(this::toDto).collect(Collectors.toList());
-
-        // Cache result 10 นาที
-        if (cache != null) {
-            cache.put(cacheKey, products);
-        }
-
-        return products;
-    }
-
-    private List<ProductDto> getFallbackRecommendations(Long userId, int limit) {
-        // Fallback: ส่ง popular products แทน
-        return productRepository.findTop10ByOrderByViewCountDesc()
-                .stream().limit(limit).map(this::toDto).collect(Collectors.toList());
     }
 }
 ```
 
-## ขั้นตอนที่ 3364: ONNX Model Inference ใน Java
+---
 
-ONNX (Open Neural Network Exchange) ช่วยให้รัน ML model โดยตรงใน Java โดยไม่ต้องเรียก Python service
+## ขั้นตอนที่ 3362: ONNX Model Inference ใน Java
+
+ONNX (Open Neural Network Exchange) ช่วยให้ run ML models ใน Java โดยตรง ไม่ต้องเรียก Python
+
+### Dependencies
 
 ```xml
 <!-- pom.xml -->
@@ -302,885 +214,680 @@ ONNX (Open Neural Network Exchange) ช่วยให้รัน ML model โ�
 </dependency>
 ```
 
-### Export Model เป็น ONNX (Python)
-
-```python
-# export_to_onnx.py
-import torch
-import torch.nn as nn
-from skl2onnx import convert_sklearn
-from skl2onnx.common.data_types import FloatTensorType
-import joblib
-
-# Export scikit-learn model
-model = joblib.load("fraud_model.pkl")
-initial_type = [("float_input", FloatTensorType([None, 6]))]
-onnx_model = convert_sklearn(model, initial_types=initial_type)
-
-with open("fraud_model.onnx", "wb") as f:
-    f.write(onnx_model.SerializeToString())
-
-print("Fraud model exported to ONNX!")
-
-# Export PyTorch model
-class RecommendationModel(nn.Module):
-    def __init__(self, user_emb_size, item_emb_size, hidden_size):
-        super().__init__()
-        self.user_embedding = nn.Embedding(10000, user_emb_size)
-        self.item_embedding = nn.Embedding(50000, item_emb_size)
-        self.fc = nn.Sequential(
-            nn.Linear(user_emb_size + item_emb_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1),
-            nn.Sigmoid()
-        )
-    
-    def forward(self, user_id, item_id):
-        user_emb = self.user_embedding(user_id)
-        item_emb = self.item_embedding(item_id)
-        x = torch.cat([user_emb, item_emb], dim=1)
-        return self.fc(x)
-
-model = RecommendationModel(64, 64, 128)
-model.load_state_dict(torch.load("recommendation_model.pth"))
-model.eval()
-
-dummy_user = torch.LongTensor([1])
-dummy_item = torch.LongTensor([1])
-
-torch.onnx.export(
-    model, (dummy_user, dummy_item),
-    "recommendation_model.onnx",
-    input_names=["user_id", "item_id"],
-    output_names=["score"],
-    dynamic_axes={
-        "user_id": {0: "batch_size"},
-        "item_id": {0: "batch_size"}
-    }
-)
-print("Recommendation model exported to ONNX!")
-```
-
-### ONNX Inference Service ใน Java
+### ONNX Inference Service
 
 ```java
-// OnnxInferenceService.java
-package com.shophub.ml.onnx;
+// ml/onnx/OnnxInferenceService.java
+package com.example.shophub.ml.onnx;
 
 import ai.onnxruntime.*;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
-import java.nio.file.Path;
+import java.nio.FloatBuffer;
 import java.util.*;
 
 @Service
-@Slf4j
-public class FraudDetectionOnnxService {
-
-    @Value("${ml.models.fraud.path:models/fraud_model.onnx}")
-    private String modelPath;
-
-    private OrtEnvironment environment;
-    private OrtSession session;
-    private OrtSession.SessionOptions options;
-
+public class OnnxInferenceService {
+    
+    private final OrtEnvironment environment;
+    private final Map<String, OrtSession> sessions = new ConcurrentHashMap<>();
+    
+    public OnnxInferenceService() throws OrtException {
+        this.environment = OrtEnvironment.getEnvironment();
+    }
+    
     @PostConstruct
-    public void initialize() throws OrtException {
-        log.info("Loading ONNX fraud detection model from: {}", modelPath);
+    public void loadModels() throws OrtException {
+        // Load fraud detection model
+        loadModel("fraud_detector", "models/fraud_detector.onnx");
         
-        environment = OrtEnvironment.getEnvironment();
-        options = new OrtSession.SessionOptions();
+        // Load product ranking model
+        loadModel("product_ranker", "models/product_ranker.onnx");
         
-        // Enable optimizations
+        log.info("โหลด ONNX models สำเร็จ: {} models", sessions.size());
+    }
+    
+    private void loadModel(String name, String path) throws OrtException {
+        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
         options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-        options.setIntraOpNumThreads(2);
-        options.setInterOpNumThreads(1);
+        options.addCPU(false); // ใช้ CPU
         
-        // Enable CPU provider (or CUDA if GPU available)
-        // options.addCUDA(0); // Enable GPU inference
-        
-        session = environment.createSession(modelPath, options);
-        
-        log.info("ONNX model loaded successfully. Input nodes: {}", session.getInputNames());
+        OrtSession session = environment.createSession(path, options);
+        sessions.put(name, session);
+        log.info("โหลด model '{}' สำเร็จ: input={}, output={}", 
+            name, session.getInputNames(), session.getOutputNames());
     }
-
-    public FraudPrediction predict(FraudFeatures features) throws OrtException {
+    
+    public FraudPrediction predictFraud(TransactionFeatures features) throws OrtException {
+        OrtSession session = sessions.get("fraud_detector");
+        
         // สร้าง input tensor
-        float[][] inputData = {{
-            (float) features.getAmount(),
-            (float) features.getUserAgeDays(),
-            (float) features.getDistinctItemCount(),
-            features.isShippingMatchBilling() ? 1.0f : 0.0f,
-            (float) features.getHourOfDay(),
-            (float) (Math.abs(features.getCountry().hashCode()) % 100)
-        }};
-
-        try (OnnxTensor inputTensor = OnnxTensor.createTensor(environment, inputData);
-             OrtSession.Result result = session.run(
-                     Map.of("float_input", inputTensor))) {
-
-            float[][] output = (float[][]) result.get(0).getValue();
-            float fraudProb = output[0][1]; // probability of class 1 (fraud)
-
+        float[] featureArray = features.toFloatArray();
+        long[] shape = {1, featureArray.length};
+        
+        OnnxTensor inputTensor = OnnxTensor.createTensor(
+            environment, 
+            FloatBuffer.wrap(featureArray), 
+            shape
+        );
+        
+        try (OrtSession.Result result = session.run(
+                Map.of("input", inputTensor))) {
+            
+            float[] probabilities = (float[]) result.get("probabilities")
+                .get().getValue();
+            
             return FraudPrediction.builder()
-                    .fraudProbability(fraudProb)
-                    .isFraud(fraudProb > 0.7f)
-                    .riskLevel(getRiskLevel(fraudProb))
-                    .build();
+                .fraudProbability(probabilities[1])
+                .isFraud(probabilities[1] > 0.7f)
+                .build();
+        } finally {
+            inputTensor.close();
         }
     }
-
-    private String getRiskLevel(float fraudProb) {
-        if (fraudProb > 0.7) return "HIGH";
-        if (fraudProb > 0.4) return "MEDIUM";
-        return "LOW";
-    }
-
-    @PreDestroy
-    public void cleanup() throws OrtException {
-        if (session != null) session.close();
-        if (options != null) options.close();
-    }
-}
-```
-
-```java
-// RecommendationOnnxService.java - Batch inference สำหรับ performance
-@Service
-@Slf4j
-public class RecommendationOnnxService {
-
-    private OrtEnvironment environment;
-    private OrtSession session;
-
-    @PostConstruct
-    public void initialize() throws OrtException {
-        environment = OrtEnvironment.getEnvironment();
-        OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-        session = environment.createSession("models/recommendation_model.onnx", opts);
-    }
-
-    // Batch inference - รัน model หลาย items พร้อมกัน
-    public List<Float> scoreItems(long userId, List<Long> itemIds) throws OrtException {
-        int batchSize = itemIds.size();
+    
+    public List<Float> rankProducts(UserFeatures userFeatures, 
+                                     List<ProductFeatures> products) throws OrtException {
+        OrtSession session = sessions.get("product_ranker");
         
-        long[] userIds = new long[batchSize];
-        long[] itemIdArr = new long[batchSize];
-        Arrays.fill(userIds, userId);
+        int numProducts = products.size();
+        int featureDim = products.get(0).getDimension();
         
-        for (int i = 0; i < batchSize; i++) {
-            itemIdArr[i] = itemIds.get(i);
+        // สร้าง batch input tensor
+        float[][] batchFeatures = new float[numProducts][featureDim];
+        for (int i = 0; i < numProducts; i++) {
+            batchFeatures[i] = products.get(i).toFloatArray(userFeatures);
         }
-
-        try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, userIds);
-             OnnxTensor itemTensor = OnnxTensor.createTensor(environment, itemIdArr);
-             OrtSession.Result result = session.run(
-                     Map.of("user_id", userTensor, "item_id", itemTensor))) {
-
-            float[][] scores = (float[][]) result.get(0).getValue();
+        
+        long[] shape = {numProducts, featureDim};
+        OnnxTensor inputTensor = OnnxTensor.createTensor(environment, batchFeatures);
+        
+        try (OrtSession.Result result = session.run(Map.of("features", inputTensor))) {
+            float[] scores = (float[]) result.get("scores").get().getValue();
+            
             List<Float> scoreList = new ArrayList<>();
-            for (float[] score : scores) {
-                scoreList.add(score[0]);
+            for (float score : scores) {
+                scoreList.add(score);
             }
             return scoreList;
+        } finally {
+            inputTensor.close();
         }
     }
-
-    // Top-K recommendation
-    public List<Long> topKRecommendations(long userId, List<Long> candidateItems, int k) 
-            throws OrtException {
-        List<Float> scores = scoreItems(userId, candidateItems);
-        
-        // Rank items by score
-        List<Map.Entry<Long, Float>> scored = new ArrayList<>();
-        for (int i = 0; i < candidateItems.size(); i++) {
-            scored.add(Map.entry(candidateItems.get(i), scores.get(i)));
-        }
-        
-        return scored.stream()
-                .sorted(Map.Entry.<Long, Float>comparingByValue().reversed())
-                .limit(k)
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toList());
+    
+    @PreDestroy
+    public void cleanup() throws OrtException {
+        sessions.values().forEach(session -> {
+            try { session.close(); } catch (OrtException e) { /* ignore */ }
+        });
+        environment.close();
     }
 }
 ```
 
-## ขั้นตอนที่ 3365: Feature Store Pattern
-
-Feature Store เก็บ features ที่ compute แล้ว ให้ทั้ง training และ inference ใช้ร่วมกัน ป้องกัน training-serving skew
+### Feature Extraction
 
 ```java
-// FeatureStore interface
+// ml/features/TransactionFeatures.java
+public class TransactionFeatures {
+    
+    private final float amount;
+    private final float hourOfDay;
+    private final float dayOfWeek;
+    private final float merchantCategoryCode;
+    private final float isInternational;
+    private final float velocityScore;   // ความถี่การใช้งาน
+    private final float locationRiskScore;
+    
+    public float[] toFloatArray() {
+        return new float[]{
+            amount,
+            hourOfDay / 24.0f,           // Normalize
+            dayOfWeek / 7.0f,
+            merchantCategoryCode / 9999.0f,
+            isInternational,
+            velocityScore,
+            locationRiskScore
+        };
+    }
+    
+    public static TransactionFeatures from(Transaction transaction, UserProfile user) {
+        return TransactionFeatures.builder()
+            .amount((float) transaction.getAmount().doubleValue())
+            .hourOfDay(transaction.getTimestamp().getHour())
+            .dayOfWeek(transaction.getTimestamp().getDayOfWeek().getValue())
+            .merchantCategoryCode(transaction.getMerchantCategoryCode())
+            .isInternational(transaction.isInternational() ? 1.0f : 0.0f)
+            .velocityScore(calculateVelocityScore(user, transaction))
+            .locationRiskScore(calculateLocationRisk(transaction.getLocation(), user))
+            .build();
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3363: Feature Store Pattern
+
+Feature store แยก feature computation ออกจาก model training และ serving
+
+### Feature Store Architecture
+
+```
+Offline Feature Store (S3/HDFS):
+- Historical features สำหรับ training
+- Batch computed daily/weekly
+
+Online Feature Store (Redis):
+- Real-time features สำหรับ serving
+- Low latency (<5ms)
+- Updated in real-time
+```
+
+```java
+// featurestore/FeatureStore.java
 public interface FeatureStore {
-    UserFeatures getUserFeatures(Long userId);
-    void updateUserFeatures(Long userId, UserFeatures features);
-    ProductFeatures getProductFeatures(Long productId);
-    void updateProductFeatures(Long productId, ProductFeatures features);
+    Map<String, Object> getFeatures(String entityId, List<String> featureNames);
+    void putFeatures(String entityId, Map<String, Object> features);
+    void putFeaturesAsync(String entityId, Map<String, Object> features);
 }
-```
 
-```java
-// RedisFeatureStore.java - Online Feature Store ใช้ Redis
+// featurestore/RedisFeatureStore.java
 @Service
-@RequiredArgsConstructor
-@Slf4j
+@Primary
 public class RedisFeatureStore implements FeatureStore {
-
-    private final RedisTemplate<String, String> redisTemplate;
+    
+    private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
     
-    private static final String USER_FEATURES_PREFIX = "features:user:";
-    private static final Duration FEATURE_TTL = Duration.ofHours(24);
-
+    private static final String KEY_PREFIX = "features:";
+    private static final Duration DEFAULT_TTL = Duration.ofHours(24);
+    
     @Override
-    public UserFeatures getUserFeatures(Long userId) {
-        String key = USER_FEATURES_PREFIX + userId;
-        String json = redisTemplate.opsForValue().get(key);
+    public Map<String, Object> getFeatures(String entityId, List<String> featureNames) {
+        String key = KEY_PREFIX + entityId;
         
-        if (json == null) {
-            return computeAndStoreUserFeatures(userId);
+        // Get specific fields from Redis Hash
+        List<Object> values = redisTemplate.opsForHash()
+            .multiGet(key, featureNames.stream()
+                .map(Object.class::cast)
+                .collect(Collectors.toList()));
+        
+        Map<String, Object> features = new HashMap<>();
+        for (int i = 0; i < featureNames.size(); i++) {
+            if (values.get(i) != null) {
+                features.put(featureNames.get(i), values.get(i));
+            }
         }
         
-        try {
-            return objectMapper.readValue(json, UserFeatures.class);
-        } catch (JsonProcessingException e) {
-            log.error("Failed to deserialize user features for userId: {}", userId);
-            return computeAndStoreUserFeatures(userId);
-        }
-    }
-
-    @Override
-    public void updateUserFeatures(Long userId, UserFeatures features) {
-        String key = USER_FEATURES_PREFIX + userId;
-        try {
-            String json = objectMapper.writeValueAsString(features);
-            redisTemplate.opsForValue().set(key, json, FEATURE_TTL);
-        } catch (JsonProcessingException e) {
-            log.error("Failed to serialize user features for userId: {}", userId);
-        }
-    }
-
-    private UserFeatures computeAndStoreUserFeatures(Long userId) {
-        // Compute features จาก raw data
-        UserFeatures features = computeUserFeatures(userId);
-        updateUserFeatures(userId, features);
         return features;
     }
-
-    private UserFeatures computeUserFeatures(Long userId) {
-        // Aggregate user behavior features
-        // ในระบบจริง จะ query จาก analytics DB หรือ event stream
-        return UserFeatures.builder()
-                .userId(userId)
-                .totalOrders(0)
-                .avgOrderValue(0.0)
-                .preferredCategories(List.of())
-                .recentlyViewedProducts(List.of())
-                .sessionCount(0)
-                .daysSinceLastOrder(0)
-                .computedAt(Instant.now())
-                .build();
+    
+    @Override
+    public void putFeatures(String entityId, Map<String, Object> features) {
+        String key = KEY_PREFIX + entityId;
+        
+        redisTemplate.opsForHash().putAll(key, features);
+        redisTemplate.expire(key, DEFAULT_TTL);
+    }
+    
+    @Override
+    @Async
+    public void putFeaturesAsync(String entityId, Map<String, Object> features) {
+        putFeatures(entityId, features);
+    }
+    
+    // Batch get สำหรับ multiple entities
+    public Map<String, Map<String, Object>> batchGetFeatures(
+            List<String> entityIds, 
+            List<String> featureNames) {
+        
+        // ใช้ Redis pipeline เพื่อ batch requests
+        List<Object> results = redisTemplate.executePipelined(
+            (RedisCallback<Object>) connection -> {
+                entityIds.forEach(entityId -> {
+                    byte[] key = (KEY_PREFIX + entityId).getBytes();
+                    featureNames.forEach(featureName -> {
+                        connection.hashCommands().hGet(key, featureName.getBytes());
+                    });
+                });
+                return null;
+            }
+        );
+        
+        // Process pipeline results
+        Map<String, Map<String, Object>> resultMap = new HashMap<>();
+        int idx = 0;
+        for (String entityId : entityIds) {
+            Map<String, Object> features = new HashMap<>();
+            for (String featureName : featureNames) {
+                features.put(featureName, results.get(idx++));
+            }
+            resultMap.put(entityId, features);
+        }
+        
+        return resultMap;
     }
 }
 ```
 
-```java
-// UserFeatures.java
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class UserFeatures {
-    private Long userId;
-    private int totalOrders;
-    private double avgOrderValue;
-    private List<String> preferredCategories;
-    private List<Long> recentlyViewedProducts;
-    private int sessionCount;
-    private int daysSinceLastOrder;
-    private String userSegment; // "new", "active", "vip", "churned"
-    private Instant computedAt;
+### Real-time Feature Computation
 
-    // แปลงเป็น feature vector สำหรับ ML model
-    public List<Double> toVector() {
-        return List.of(
-                (double) totalOrders,
-                avgOrderValue,
-                (double) preferredCategories.size(),
-                (double) sessionCount,
-                (double) daysSinceLastOrder,
-                "vip".equals(userSegment) ? 1.0 : 0.0
+```java
+// featurestore/UserFeatureComputationService.java
+@Service
+public class UserFeatureComputationService {
+    
+    private final FeatureStore featureStore;
+    private final OrderRepository orderRepository;
+    
+    @EventListener
+    @Async
+    public void onOrderPlaced(OrderPlacedEvent event) {
+        // อัปเดต user features เมื่อมีคำสั่งซื้อใหม่
+        updateUserPurchaseFeatures(event.getCustomerId());
+    }
+    
+    @EventListener
+    @Async
+    public void onProductViewed(ProductViewedEvent event) {
+        // อัปเดต user browsing features
+        updateUserBrowsingFeatures(event.getUserId(), event.getProductId());
+    }
+    
+    private void updateUserPurchaseFeatures(String userId) {
+        LocalDateTime thirtyDaysAgo = LocalDateTime.now().minusDays(30);
+        
+        // คำนวณ features จาก recent orders
+        List<Order> recentOrders = orderRepository
+            .findByCustomerIdAndCreatedAtAfter(userId, thirtyDaysAgo);
+        
+        Map<String, Object> features = Map.of(
+            "purchase_count_30d", recentOrders.size(),
+            "avg_order_value", calculateAvgOrderValue(recentOrders),
+            "preferred_categories", getPreferredCategories(recentOrders),
+            "last_purchase_days_ago", getDaysSinceLastPurchase(recentOrders),
+            "is_frequent_buyer", recentOrders.size() >= 3
+        );
+        
+        featureStore.putFeaturesAsync(userId, features);
+    }
+    
+    private void updateUserBrowsingFeatures(String userId, String productId) {
+        // Increment browse count สำหรับ category ของ product นี้
+        String category = productRepository.findCategoryById(productId);
+        
+        String key = "browse_count_" + category;
+        Map<String, Object> features = featureStore.getFeatures(userId, List.of(key));
+        
+        int currentCount = (int) features.getOrDefault(key, 0);
+        featureStore.putFeatures(userId, Map.of(key, currentCount + 1));
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3364: A/B Testing Framework สำหรับ ML Models
+
+```java
+// abtest/AbTestService.java
+@Service
+public class AbTestService {
+    
+    private final ExperimentRepository experimentRepository;
+    private final FeatureStore featureStore;
+    private final MeterRegistry meterRegistry;
+    
+    public <T> T runExperiment(String experimentName, String userId, 
+                                Function<String, T> controlFunction,
+                                Function<String, T> treatmentFunction) {
+        
+        Experiment experiment = experimentRepository.findActiveByName(experimentName)
+            .orElseThrow(() -> new ExperimentNotFoundException(experimentName));
+        
+        // กำหนด variant สำหรับ user นี้
+        String variant = assignVariant(userId, experiment);
+        
+        // Track assignment
+        trackAssignment(experimentName, userId, variant);
+        
+        // Execute variant
+        T result;
+        long startTime = System.currentTimeMillis();
+        
+        try {
+            result = switch (variant) {
+                case "control" -> controlFunction.apply(userId);
+                case "treatment" -> treatmentFunction.apply(userId);
+                default -> controlFunction.apply(userId);
+            };
+            
+            long latency = System.currentTimeMillis() - startTime;
+            recordMetrics(experimentName, variant, "success", latency);
+            
+            return result;
+        } catch (Exception e) {
+            recordMetrics(experimentName, variant, "error", 0);
+            throw e;
+        }
+    }
+    
+    private String assignVariant(String userId, Experiment experiment) {
+        // Consistent assignment ด้วย hashing
+        int hash = Math.abs((userId + experiment.getName()).hashCode());
+        double percentage = (hash % 100) / 100.0;
+        
+        double cumulativeWeight = 0;
+        for (ExperimentVariant variant : experiment.getVariants()) {
+            cumulativeWeight += variant.getWeight();
+            if (percentage < cumulativeWeight) {
+                return variant.getName();
+            }
+        }
+        
+        return "control";
+    }
+    
+    private void trackAssignment(String experiment, String userId, String variant) {
+        featureStore.putFeaturesAsync(
+            "experiment:" + experiment + ":" + userId,
+            Map.of("variant", variant, "assigned_at", System.currentTimeMillis())
+        );
+        
+        meterRegistry.counter("experiment.assignment",
+            "experiment", experiment,
+            "variant", variant).increment();
+    }
+}
+
+// abtest/RecommendationAbTest.java
+@Service
+public class RecommendationAbTest {
+    
+    private final AbTestService abTestService;
+    private final MlServiceClient mlServiceClient;
+    private final CollaborativeFilteringService cfService;
+    
+    public List<String> getRecommendations(String userId) {
+        return abTestService.runExperiment(
+            "recommendation_model_v2",
+            userId,
+            // Control: old collaborative filtering
+            uid -> cfService.getRecommendations(uid, 10),
+            // Treatment: new ML model
+            uid -> mlServiceClient.getRecommendations(uid, List.of(), 10)
+                .map(r -> r.getRecommendedProductIds())
+                .block(Duration.ofSeconds(2))
         );
     }
 }
 ```
 
-### Feature Pipeline สำหรับ update features
+---
+
+## ขั้นตอนที่ 3365: Model Versioning และ Gradual Rollout
 
 ```java
-// FeatureUpdatePipeline.java - อัปเดต features เมื่อเกิด events
+// ml/ModelVersioningService.java
 @Service
-@RequiredArgsConstructor
-@Slf4j
-public class FeatureUpdatePipeline {
-
-    private final FeatureStore featureStore;
-    private final OrderRepository orderRepository;
-
-    // รับ event เมื่อ order สร้างสำเร็จ
-    @KafkaListener(topics = "order.created", groupId = "feature-pipeline")
-    public void handleOrderCreated(OrderCreatedEvent event) {
-        log.debug("Updating features for user: {} after order creation", event.getUserId());
-        
-        // คำนวณ features ใหม่
-        UserFeatures currentFeatures = featureStore.getUserFeatures(event.getUserId());
-        
-        // อัปเดต order-related features
-        UserFeatures updatedFeatures = currentFeatures.toBuilder()
-                .totalOrders(currentFeatures.getTotalOrders() + 1)
-                .daysSinceLastOrder(0) // เพิ่ง order
-                .avgOrderValue(calculateNewAvg(
-                        currentFeatures.getAvgOrderValue(),
-                        currentFeatures.getTotalOrders(),
-                        event.getTotalAmount().doubleValue()
-                ))
-                .computedAt(Instant.now())
-                .build();
-
-        featureStore.updateUserFeatures(event.getUserId(), updatedFeatures);
-    }
-
-    // อัปเดต product features เมื่อสินค้าถูกดู
-    @EventListener
-    public void handleProductViewed(ProductViewedEvent event) {
-        // อัปเดต product popularity features
-        ProductFeatures features = featureStore.getProductFeatures(event.getProductId());
-        ProductFeatures updated = features.toBuilder()
-                .viewCount(features.getViewCount() + 1)
-                .lastViewedAt(Instant.now())
-                .build();
-        featureStore.updateProductFeatures(event.getProductId(), updated);
-    }
-
-    private double calculateNewAvg(double currentAvg, int currentCount, double newValue) {
-        return (currentAvg * currentCount + newValue) / (currentCount + 1);
-    }
-}
-```
-
-## ขั้นตอนที่ 3366: A/B Testing สำหรับ ML Models
-
-A/B Testing ช่วยทดสอบ model ใหม่กับ traffic จริงอย่างปลอดภัย
-
-```java
-// ABTestingService.java
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class MLABTestingService {
-
-    private final MLExperimentRepository experimentRepository;
-    private final RecommendationOnnxService modelV1;
-    private final RecommendationOnnxService modelV2; // New model
-    private final MLMetricsService metricsService;
-
-    public List<Long> getRecommendations(Long userId, List<Long> candidates, int k) {
-        // ดึง experiment config
-        Optional<MLExperiment> experiment = experimentRepository
-                .findActiveByName("recommendation-model-v2");
-
-        if (experiment.isEmpty()) {
-            // ไม่มี experiment - ใช้ model หลัก
-            return getRecommendationsFromModel(modelV1, userId, candidates, k, "v1");
-        }
-
-        MLExperiment exp = experiment.get();
-        
-        // กำหนด variant ตาม user ID (consistent bucketing)
-        String variant = assignVariant(userId, exp.getTrafficSplit());
-        
-        try {
-            if ("control".equals(variant)) {
-                return getRecommendationsFromModel(modelV1, userId, candidates, k, "v1");
-            } else {
-                return getRecommendationsFromModel(modelV2, userId, candidates, k, "v2");
-            }
-        } finally {
-            // บันทึก assignment สำหรับ analysis
-            metricsService.recordAssignment(exp.getId(), userId, variant);
-        }
-    }
-
-    private String assignVariant(Long userId, double trafficSplit) {
-        // Consistent bucketing: ใช้ hash เพื่อให้ user เจอ variant เดิมทุกครั้ง
-        int bucket = Math.abs(userId.hashCode()) % 100;
-        return bucket < (trafficSplit * 100) ? "treatment" : "control";
-    }
-
-    private List<Long> getRecommendationsFromModel(
-            RecommendationOnnxService model, Long userId,
-            List<Long> candidates, int k, String modelVersion) {
-        try {
-            long startTime = System.currentTimeMillis();
-            List<Long> results = model.topKRecommendations(userId, candidates, k);
-            long latency = System.currentTimeMillis() - startTime;
-
-            metricsService.recordInference(modelVersion, latency, results.size());
-            return results;
-        } catch (OrtException e) {
-            log.error("Model inference failed for version {}: {}", modelVersion, e.getMessage());
-            throw new RuntimeException("Recommendation failed", e);
-        }
-    }
-}
-```
-
-```java
-// MLExperiment.java
-@Entity
-@Table(name = "ml_experiments")
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class MLExperiment {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    private String name;
-    private String description;
-    private double trafficSplit; // 0.0-1.0 (proportion going to treatment)
-    private boolean active;
-    private LocalDateTime startDate;
-    private LocalDateTime endDate;
+public class ModelVersioningService {
     
-    @Enumerated(EnumType.STRING)
-    private ExperimentStatus status;
-
-    public enum ExperimentStatus {
-        DRAFT, RUNNING, PAUSED, COMPLETED
+    private final Map<String, ModelVersion> activeVersions = new ConcurrentHashMap<>();
+    private final FeatureStore featureStore;
+    
+    @PostConstruct
+    public void loadActiveVersions() {
+        // โหลด model versions จาก config/database
+        activeVersions.put("recommendation", new ModelVersion("v2.1.0", 0.1)); // 10% traffic
+        activeVersions.put("fraud_detection", new ModelVersion("v1.0.0", 1.0)); // 100% traffic
     }
-}
-```
-
-### Metrics Collection สำหรับ A/B Testing
-
-```java
-// MLMetricsService.java
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class MLMetricsService {
-
-    private final MLMetricsRepository metricsRepository;
-    private final MeterRegistry meterRegistry;
-
-    // บันทึก click event เมื่อ user click สินค้าที่ recommend
-    public void recordClick(Long userId, Long productId, String modelVersion) {
-        MLEvent event = MLEvent.builder()
-                .userId(userId)
-                .eventType("CLICK")
-                .productId(productId)
-                .modelVersion(modelVersion)
-                .timestamp(Instant.now())
-                .build();
-        metricsRepository.save(event);
-
-        meterRegistry.counter("ml.recommendation.click",
-                "model_version", modelVersion).increment();
-    }
-
-    // บันทึก purchase event เมื่อ user ซื้อสินค้าที่ recommend
-    public void recordPurchase(Long userId, Long productId, String modelVersion, double revenue) {
-        MLEvent event = MLEvent.builder()
-                .userId(userId)
-                .eventType("PURCHASE")
-                .productId(productId)
-                .modelVersion(modelVersion)
-                .revenue(revenue)
-                .timestamp(Instant.now())
-                .build();
-        metricsRepository.save(event);
-
-        meterRegistry.counter("ml.recommendation.purchase",
-                "model_version", modelVersion).increment();
-        meterRegistry.gauge("ml.recommendation.revenue",
-                Tags.of("model_version", modelVersion), revenue);
-    }
-
-    // คำนวณ CTR และ Conversion Rate สำหรับแต่ละ model
-    public ExperimentMetrics calculateMetrics(Long experimentId, String period) {
-        List<MLEvent> events = metricsRepository
-                .findByExperimentIdAndPeriod(experimentId, period);
-
-        Map<String, Long> clicks = events.stream()
-                .filter(e -> "CLICK".equals(e.getEventType()))
-                .collect(Collectors.groupingBy(MLEvent::getModelVersion, Collectors.counting()));
-
-        Map<String, Long> purchases = events.stream()
-                .filter(e -> "PURCHASE".equals(e.getEventType()))
-                .collect(Collectors.groupingBy(MLEvent::getModelVersion, Collectors.counting()));
-
-        Map<String, Double> revenue = events.stream()
-                .filter(e -> "PURCHASE".equals(e.getEventType()))
-                .collect(Collectors.groupingBy(MLEvent::getModelVersion,
-                        Collectors.summingDouble(MLEvent::getRevenue)));
-
-        return ExperimentMetrics.builder()
-                .experimentId(experimentId)
-                .period(period)
-                .clicksByModel(clicks)
-                .purchasesByModel(purchases)
-                .revenueByModel(revenue)
-                .build();
-    }
-}
-```
-
-## ขั้นตอนที่ 3367: Model Versioning และ Rollout
-
-```java
-// ModelVersionManager.java - จัดการ versions ของ model
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class ModelVersionManager {
-
-    private final ModelVersionRepository versionRepository;
-    private final S3Client s3Client;
-    private volatile Map<String, OrtSession> loadedSessions = new ConcurrentHashMap<>();
-    private volatile Map<String, String> activeVersions = new ConcurrentHashMap<>();
-
-    @Value("${aws.s3.models-bucket}")
-    private String modelsBucket;
-
-    // โหลด model version ใหม่
-    public void loadModelVersion(String modelName, String version) throws Exception {
-        log.info("Loading model {} version {}", modelName, version);
-
-        // Download จาก S3
-        String s3Key = String.format("models/%s/%s/model.onnx", modelName, version);
-        String localPath = downloadModel(s3Key, modelName, version);
-
-        // Load ONNX session
-        OrtEnvironment env = OrtEnvironment.getEnvironment();
-        OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-        OrtSession newSession = env.createSession(localPath, opts);
-
-        String sessionKey = modelName + ":" + version;
-        loadedSessions.put(sessionKey, newSession);
+    
+    public String getModelVersion(String modelName, String userId) {
+        ModelVersion version = activeVersions.get(modelName);
+        if (version == null) return "default";
         
-        log.info("Model {} version {} loaded successfully", modelName, version);
-    }
-
-    // Promote version ให้เป็น active
-    public void promoteVersion(String modelName, String version) {
-        String sessionKey = modelName + ":" + version;
-        if (!loadedSessions.containsKey(sessionKey)) {
-            throw new IllegalStateException("Model not loaded: " + sessionKey);
+        // Check if user is in rollout group
+        double hash = Math.abs(userId.hashCode() % 100) / 100.0;
+        
+        if (hash < version.getRolloutPercentage()) {
+            return version.getVersion();
         }
+        
+        return version.getPreviousVersion();
+    }
+    
+    // Gradual rollout
+    @Scheduled(cron = "0 0 */6 * * ?") // ทุก 6 ชั่วโมง
+    public void increaseRollout() {
+        activeVersions.forEach((name, version) -> {
+            if (version.getErrorRate() < 0.01 && version.getRolloutPercentage() < 1.0) {
+                double newPercentage = Math.min(version.getRolloutPercentage() + 0.1, 1.0);
+                version.setRolloutPercentage(newPercentage);
+                log.info("เพิ่ม rollout สำหรับ {} เป็น {}%", 
+                    name, (int)(newPercentage * 100));
+            }
+        });
+    }
+    
+    // Automatic rollback
+    @Scheduled(fixedRate = 60000)
+    public void checkModelHealth() {
+        activeVersions.forEach((name, version) -> {
+            if (version.getErrorRate() > 0.05) { // Error > 5%
+                log.error("Model {} มี error rate สูง {}% - กำลัง rollback!",
+                    name, version.getErrorRate() * 100);
+                version.setRolloutPercentage(0.0); // Rollback ทันที
+                alertService.sendModelAlert(name, version);
+            }
+        });
+    }
+}
+```
 
-        String previousVersion = activeVersions.get(modelName);
-        activeVersions.put(modelName, version);
+---
 
-        log.info("Promoted {} to version {} (was: {})", 
-                modelName, version, previousVersion);
+## ขั้นตอนที่ 3366: Recommendation Engine
 
-        // บันทึก version history
-        versionRepository.save(ModelVersion.builder()
-                .modelName(modelName)
-                .version(version)
-                .promotedAt(Instant.now())
-                .previousVersion(previousVersion)
+### Collaborative Filtering Service
+
+```java
+// recommendation/CollaborativeFilteringService.java
+@Service
+public class CollaborativeFilteringService {
+    
+    private final UserProductInteractionRepository interactionRepository;
+    private final FeatureStore featureStore;
+    private final MlServiceClient mlServiceClient;
+    
+    public List<String> getRecommendations(String userId, int limit) {
+        // ตรวจสอบ cached recommendations ก่อน
+        Map<String, Object> cached = featureStore.getFeatures(
+            userId, 
+            List.of("recommendations", "recommendations_updated_at")
+        );
+        
+        if (cached.get("recommendations") != null) {
+            long updatedAt = (long) cached.getOrDefault("recommendations_updated_at", 0L);
+            if (System.currentTimeMillis() - updatedAt < 3_600_000) { // 1 ชั่วโมง
+                return (List<String>) cached.get("recommendations");
+            }
+        }
+        
+        // คำนวณ recommendations ใหม่
+        return computeRecommendations(userId, limit);
+    }
+    
+    private List<String> computeRecommendations(String userId, int limit) {
+        // ดู user interactions
+        List<UserProductInteraction> interactions = 
+            interactionRepository.findByUserIdOrderByTimestampDesc(userId, 
+                PageRequest.of(0, 1000));
+        
+        if (interactions.isEmpty()) {
+            return getPopularProducts(limit); // Cold start - ใช้ popular products
+        }
+        
+        // Find similar users (User-based CF)
+        List<String> interactedProducts = interactions.stream()
+            .map(UserProductInteraction::getProductId)
+            .collect(Collectors.toList());
+        
+        List<String> similarUsers = findSimilarUsers(userId, interactedProducts);
+        
+        // ดูสินค้าที่ similar users ชอบ แต่ current user ยังไม่เคยดู
+        Set<String> interactedSet = new HashSet<>(interactedProducts);
+        
+        return similarUsers.stream()
+            .flatMap(similarUserId -> 
+                interactionRepository.findRecentProductsByUserId(similarUserId, 50)
+                    .stream()
+                    .map(UserProductInteraction::getProductId))
+            .filter(productId -> !interactedSet.contains(productId))
+            .distinct()
+            .limit(limit)
+            .collect(Collectors.toList());
+    }
+    
+    @Async
+    public void recordInteraction(String userId, String productId, InteractionType type) {
+        UserProductInteraction interaction = UserProductInteraction.builder()
+            .userId(userId)
+            .productId(productId)
+            .type(type)
+            .timestamp(LocalDateTime.now())
+            .weight(type.getWeight())
+            .build();
+        
+        interactionRepository.save(interaction);
+        
+        // อัปเดต real-time features
+        featureStore.putFeaturesAsync(userId, Map.of(
+            "last_viewed_product", productId,
+            "last_interaction_at", System.currentTimeMillis()
+        ));
+    }
+    
+    private List<String> findSimilarUsers(String userId, List<String> products) {
+        // หา users ที่ interact กับ products เดียวกัน
+        return interactionRepository.findUsersByProducts(products, userId, 20);
+    }
+    
+    private List<String> getPopularProducts(int limit) {
+        return interactionRepository.findMostInteractedProducts(
+            LocalDateTime.now().minusDays(7), limit);
+    }
+}
+```
+
+### Recommendation API
+
+```java
+// controller/RecommendationController.java
+@RestController
+@RequestMapping("/api/v1/recommendations")
+public class RecommendationController {
+    
+    private final CollaborativeFilteringService cfService;
+    private final MlServiceClient mlServiceClient;
+    private final AbTestService abTestService;
+    private final ProductService productService;
+    
+    @GetMapping("/for-you")
+    public ResponseEntity<RecommendationResponse> getPersonalizedRecommendations(
+            @AuthenticationPrincipal UserDetails user,
+            @RequestParam(defaultValue = "10") int limit) {
+        
+        List<String> productIds = abTestService.runExperiment(
+            "recommendation_algorithm",
+            user.getUsername(),
+            userId -> cfService.getRecommendations(userId, limit),
+            userId -> mlServiceClient.getRecommendations(userId, List.of(), limit)
+                .map(RecommendationResponse::getRecommendedProductIds)
+                .onErrorReturn(cfService.getRecommendations(userId, limit)) // fallback
+                .block(Duration.ofSeconds(2))
+        );
+        
+        // Enrich ด้วยข้อมูล product
+        List<ProductDto> products = productService.findByIds(productIds);
+        
+        return ResponseEntity.ok()
+            .cacheControl(CacheControl.maxAge(Duration.ofMinutes(5)))
+            .body(RecommendationResponse.builder()
+                .products(products)
+                .algorithm(abTestService.getAssignedVariant(user.getUsername(), "recommendation_algorithm"))
                 .build());
     }
-
-    // Rollback ไป version ก่อน
-    public void rollback(String modelName) {
-        ModelVersion current = versionRepository
-                .findLatestByModelName(modelName)
-                .orElseThrow();
+    
+    @PostMapping("/track")
+    public ResponseEntity<Void> trackInteraction(
+            @AuthenticationPrincipal UserDetails user,
+            @RequestBody TrackInteractionRequest request) {
         
-        if (current.getPreviousVersion() == null) {
-            throw new IllegalStateException("No previous version to rollback to");
-        }
-
-        log.warn("Rolling back {} from {} to {}", 
-                modelName, current.getVersion(), current.getPreviousVersion());
-        promoteVersion(modelName, current.getPreviousVersion());
-    }
-
-    // ดึง session ของ active version
-    public OrtSession getActiveSession(String modelName) {
-        String version = activeVersions.get(modelName);
-        if (version == null) {
-            throw new IllegalStateException("No active version for model: " + modelName);
-        }
-        return loadedSessions.get(modelName + ":" + version);
-    }
-
-    private String downloadModel(String s3Key, String modelName, String version) throws Exception {
-        String localPath = String.format("/tmp/models/%s/%s/model.onnx", modelName, version);
-        Files.createDirectories(Path.of(localPath).getParent());
-
-        GetObjectRequest request = GetObjectRequest.builder()
-                .bucket(modelsBucket)
-                .key(s3Key)
-                .build();
-
-        s3Client.getObject(request, Path.of(localPath));
-        return localPath;
-    }
-}
-```
-
-### REST API สำหรับ Model Management
-
-```java
-// ModelManagementController.java
-@RestController
-@RequestMapping("/api/admin/ml")
-@RequiredArgsConstructor
-@Slf4j
-public class ModelManagementController {
-
-    private final ModelVersionManager versionManager;
-
-    @PostMapping("/models/{modelName}/versions/{version}/load")
-    public ResponseEntity<ApiResponse<Void>> loadModel(
-            @PathVariable String modelName,
-            @PathVariable String version) throws Exception {
-        versionManager.loadModelVersion(modelName, version);
-        return ResponseEntity.ok(ApiResponse.success("Model loaded: " + modelName + " v" + version, null));
-    }
-
-    @PostMapping("/models/{modelName}/versions/{version}/promote")
-    public ResponseEntity<ApiResponse<Void>> promoteModel(
-            @PathVariable String modelName,
-            @PathVariable String version) {
-        versionManager.promoteVersion(modelName, version);
-        return ResponseEntity.ok(ApiResponse.success("Model promoted: " + modelName + " v" + version, null));
-    }
-
-    @PostMapping("/models/{modelName}/rollback")
-    public ResponseEntity<ApiResponse<Void>> rollback(@PathVariable String modelName) {
-        versionManager.rollback(modelName);
-        return ResponseEntity.ok(ApiResponse.success("Rollback successful for: " + modelName, null));
-    }
-}
-```
-
-## ขั้นตอนที่ 3368: Recommendation Engine Integration
-
-การสร้าง recommendation engine ที่สมบูรณ์สำหรับ ShopHub
-
-```java
-// RecommendationEngine.java - Hybrid recommendation (CF + Content-based)
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class HybridRecommendationEngine {
-
-    private final CollaborativeFilteringService cfService;
-    private final ContentBasedFilteringService cbfService;
-    private final PopularityBasedService popularityService;
-    private final UserFeatureStore featureStore;
-    private final MLABTestingService abTestingService;
-
-    private static final int CANDIDATE_POOL_SIZE = 500;
-    private static final int DEFAULT_RESULTS = 20;
-
-    public RecommendationResult recommend(RecommendationContext context) {
-        Long userId = context.getUserId();
-        UserFeatures features = featureStore.getUserFeatures(userId);
-
-        // เลือก strategy ตาม user profile
-        List<Long> recommendations;
-
-        if (features.getTotalOrders() == 0) {
-            // New user: ใช้ popularity-based
-            log.debug("New user {}: using popularity-based recommendations", userId);
-            recommendations = popularityService.getPopularProducts(
-                    context.getCategory(), DEFAULT_RESULTS);
-        } else if (features.getTotalOrders() < 5) {
-            // Cold start: ผสม content-based + popularity
-            log.debug("Cold start user {}: hybrid mode", userId);
-            List<Long> cbf = cbfService.recommend(userId, features, CANDIDATE_POOL_SIZE / 2);
-            List<Long> popular = popularityService.getPopularProducts(null, CANDIDATE_POOL_SIZE / 2);
-            recommendations = mergeAndRank(cbf, popular, features, DEFAULT_RESULTS);
-        } else {
-            // Warm user: ผสม CF + content-based ด้วย A/B test
-            log.debug("Warm user {}: collaborative filtering", userId);
-            List<Long> candidates = generateCandidates(features, CANDIDATE_POOL_SIZE);
-            recommendations = abTestingService.getRecommendations(userId, candidates, DEFAULT_RESULTS);
-        }
-
-        // ตัด items ที่ user ซื้อไปแล้วออก
-        List<Long> filteredRecommendations = filterPurchased(userId, recommendations, features);
-
-        return RecommendationResult.builder()
-                .userId(userId)
-                .products(filteredRecommendations)
-                .strategy(getStrategyName(features))
-                .generatedAt(Instant.now())
-                .build();
-    }
-
-    private List<Long> generateCandidates(UserFeatures features, int size) {
-        List<Long> candidates = new ArrayList<>();
-
-        // CF candidates
-        candidates.addAll(cfService.getCandidates(features.getUserId(), size / 2));
-
-        // Content-based candidates จาก preferred categories
-        candidates.addAll(cbfService.getCandidatesByCategories(
-                features.getPreferredCategories(), size / 2));
-
-        return candidates.stream().distinct().collect(Collectors.toList());
-    }
-
-    private List<Long> filterPurchased(Long userId, List<Long> products, UserFeatures features) {
-        // ตัดสินค้าที่เคยซื้อแล้วออก (ยกเว้น consumables)
-        Set<Long> purchasedIds = new HashSet<>(features.getPurchasedProducts());
-        return products.stream()
-                .filter(id -> !purchasedIds.contains(id))
-                .collect(Collectors.toList());
-    }
-
-    private List<Long> mergeAndRank(List<Long> list1, List<Long> list2,
-                                     UserFeatures features, int limit) {
-        LinkedHashSet<Long> merged = new LinkedHashSet<>(list1);
-        merged.addAll(list2);
-        return merged.stream().limit(limit).collect(Collectors.toList());
-    }
-
-    private String getStrategyName(UserFeatures features) {
-        if (features.getTotalOrders() == 0) return "popularity";
-        if (features.getTotalOrders() < 5) return "cold-start-hybrid";
-        return "collaborative-filtering";
-    }
-}
-```
-
-## ขั้นตอนที่ 3369: Sentiment Analysis สำหรับ Product Reviews
-
-```java
-// ReviewSentimentService.java
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class ReviewSentimentService {
-
-    private final MLServiceClient mlClient;
-    private final ReviewRepository reviewRepository;
-
-    // วิเคราะห์ sentiment ของ review ใหม่
-    @Async
-    @EventListener
-    public void analyzeNewReview(ReviewCreatedEvent event) {
-        try {
-            SentimentRequest request = new SentimentRequest();
-            request.setTexts(List.of(event.getReviewText()));
-            request.setLanguage("th");
-
-            SentimentResponse response = mlClient.analyzeSentiment(request);
-            SentimentResult result = response.getResults().get(0);
-
-            // อัปเดต review ด้วย sentiment
-            reviewRepository.updateSentiment(
-                    event.getReviewId(),
-                    result.getLabel(),
-                    result.getScore()
-            );
-
-            // อัปเดต product sentiment summary
-            updateProductSentimentSummary(event.getProductId());
-
-        } catch (Exception e) {
-            log.error("Failed to analyze sentiment for review: {}", event.getReviewId(), e);
-        }
-    }
-
-    // คำนวณ sentiment summary สำหรับ product
-    public ProductSentimentSummary getProductSentimentSummary(Long productId) {
-        List<Review> reviews = reviewRepository.findByProductId(productId);
-
-        Map<String, Long> sentimentCounts = reviews.stream()
-                .filter(r -> r.getSentimentLabel() != null)
-                .collect(Collectors.groupingBy(
-                        Review::getSentimentLabel, Collectors.counting()
-                ));
-
-        double averageScore = reviews.stream()
-                .filter(r -> r.getSentimentScore() != null)
-                .mapToDouble(Review::getSentimentScore)
-                .average()
-                .orElse(0.0);
-
-        return ProductSentimentSummary.builder()
-                .productId(productId)
-                .totalReviews(reviews.size())
-                .positiveCount(sentimentCounts.getOrDefault("POSITIVE", 0L))
-                .negativeCount(sentimentCounts.getOrDefault("NEGATIVE", 0L))
-                .neutralCount(sentimentCounts.getOrDefault("NEUTRAL", 0L))
-                .averageSentimentScore(averageScore)
-                .overallSentiment(averageScore > 0.6 ? "POSITIVE" : 
-                                  averageScore < 0.4 ? "NEGATIVE" : "NEUTRAL")
-                .build();
-    }
-}
-```
-
-## ขั้นตอนที่ 3370-3400: สรุปและ Best Practices
-
-### ML Integration Testing
-
-```java
-// RecommendationServiceTest.java
-@SpringBootTest
-@ExtendWith(MockitoExtension.class)
-class RecommendationServiceTest {
-
-    @MockBean
-    private MLServiceClient mlClient;
-
-    @MockBean
-    private FeatureStore featureStore;
-
-    @Autowired
-    private RecommendationService recommendationService;
-
-    @Test
-    void shouldReturnFallbackWhenMLServiceDown() {
-        // Arrange
-        when(mlClient.getRecommendations(any()))
-                .thenThrow(new FeignException.ServiceUnavailable("ML service down", 
-                        null, null, null));
+        cfService.recordInteraction(
+            user.getUsername(),
+            request.getProductId(),
+            request.getInteractionType()
+        );
         
-        when(featureStore.getUserFeatures(1L))
-                .thenReturn(UserFeatures.builder().userId(1L).build());
-
-        // Act
-        List<ProductDto> recommendations = recommendationService
-                .getPersonalizedRecommendations(1L, 10);
-
-        // Assert - ต้องได้ fallback recommendations
-        assertThat(recommendations).isNotEmpty();
-        assertThat(recommendations.size()).isLessThanOrEqualTo(10);
+        return ResponseEntity.accepted().build();
     }
+}
+```
 
-    @Test
-    void shouldReturnCachedRecommendations() {
-        // Test caching behavior
+---
+
+## ขั้นตอนที่ 3367-3400: Real-time ML Pipeline
+
+### Kafka ML Pipeline
+
+```java
+// pipeline/MlFeatureEnrichmentPipeline.java
+@Component
+public class MlFeatureEnrichmentPipeline {
+    
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final FeatureStore featureStore;
+    private final OnnxInferenceService onnxInference;
+    
+    @KafkaListener(topics = "order-events", groupId = "ml-pipeline")
+    public void processOrderEvent(OrderEventMessage event) {
+        // 1. Compute real-time features
+        Map<String, Object> features = computeRealTimeFeatures(event);
+        
+        // 2. Update feature store
+        featureStore.putFeaturesAsync(event.getUserId(), features);
+        
+        // 3. Run fraud detection (real-time)
+        if (event.getType() == OrderEventType.PAYMENT_INITIATED) {
+            TransactionFeatures txFeatures = TransactionFeatures.from(event);
+            
+            try {
+                FraudPrediction prediction = onnxInference.predictFraud(txFeatures);
+                
+                if (prediction.isFraud()) {
+                    // ส่ง fraud alert
+                    kafkaTemplate.send("fraud-alerts", event.getOrderId(), 
+                        FraudAlert.builder()
+                            .orderId(event.getOrderId())
+                            .userId(event.getUserId())
+                            .probability(prediction.getFraudProbability())
+                            .build());
+                }
+            } catch (OrtException e) {
+                log.error("Fraud detection failed: {}", e.getMessage());
+                // Fail open - allow transaction
+            }
+        }
+    }
+    
+    private Map<String, Object> computeRealTimeFeatures(OrderEventMessage event) {
+        return Map.of(
+            "orders_today", countOrdersToday(event.getUserId()),
+            "order_amount", event.getAmount(),
+            "hour_of_day", LocalDateTime.now().getHour(),
+            "is_weekend", LocalDate.now().getDayOfWeek().getValue() > 5
+        );
     }
 }
 ```
@@ -1188,36 +895,75 @@ class RecommendationServiceTest {
 ### Model Performance Monitoring
 
 ```java
-// ModelMonitoringService.java
+// monitoring/ModelMonitoringService.java
 @Service
-@RequiredArgsConstructor
-@Slf4j
 public class ModelMonitoringService {
-
+    
     private final MeterRegistry meterRegistry;
-
-    // ติดตาม drift ของ model
-    @Scheduled(cron = "0 0 * * * *") // ทุกชั่วโมง
-    public void checkModelDrift() {
-        // เปรียบเทียบ distribution ของ input features กับ training data
-        // ถ้า drift สูงเกินไป แจ้งเตือนให้ retrain
-    }
-
+    private final FeatureStore featureStore;
+    
     public void recordPrediction(String modelName, String modelVersion,
-                                  double latencyMs, boolean successful) {
-        meterRegistry.timer("ml.model.latency",
-                "model", modelName,
-                "version", modelVersion)
-                .record(latencyMs, TimeUnit.MILLISECONDS);
-
-        meterRegistry.counter("ml.model.predictions",
+                                  Object input, Object prediction, long latencyMs) {
+        // Record prediction metrics
+        meterRegistry.counter("ml.predictions",
+            "model", modelName,
+            "version", modelVersion).increment();
+        
+        meterRegistry.timer("ml.inference.latency",
+            "model", modelName,
+            "version", modelVersion)
+            .record(latencyMs, TimeUnit.MILLISECONDS);
+        
+        // Store prediction for offline analysis
+        featureStore.putFeaturesAsync(
+            "prediction:" + UUID.randomUUID(),
+            Map.of(
                 "model", modelName,
                 "version", modelVersion,
-                "status", successful ? "success" : "error")
-                .increment();
+                "timestamp", System.currentTimeMillis(),
+                "latency_ms", latencyMs
+            )
+        );
+    }
+    
+    public void recordFeedback(String predictionId, boolean wasCorrect) {
+        // Track prediction accuracy
+        meterRegistry.counter("ml.feedback",
+            "correct", String.valueOf(wasCorrect)).increment();
+    }
+    
+    @Scheduled(cron = "0 0 * * * ?")
+    public void computeModelMetrics() {
+        // คำนวณ model performance metrics รายชั่วโมง
+        Map<String, ModelMetrics> metrics = computeHourlyMetrics();
+        
+        metrics.forEach((model, m) -> {
+            log.info("Model {}: accuracy={:.2f}%, avg_latency={}ms, predictions={}",
+                model, m.getAccuracy() * 100, m.getAvgLatency(), m.getPredictionCount());
+            
+            if (m.getAccuracy() < 0.8) {
+                log.warn("Model {} accuracy ต่ำกว่า 80% - อาจต้อง retrain", model);
+            }
+        });
     }
 }
 ```
+
+---
+
+## สรุป
+
+Part 94 ครอบคลุม Machine Learning Integration:
+
+1. **REST/gRPC** - เรียก Python ML services ด้วย WebClient/gRPC
+2. **ONNX Runtime** - run models ใน Java โดยตรง ไม่ต้อง Python
+3. **Feature Store** - Redis สำหรับ real-time features
+4. **A/B Testing** - ทดสอบ models แบบ controlled
+5. **Model Versioning** - gradual rollout + automatic rollback
+6. **Collaborative Filtering** - recommendation engine
+7. **Real-time Pipeline** - Kafka + streaming features
+
+ML integration ที่ดีต้องมี fallback เสมอ - ถ้า ML service ล้มเหลว ต้องยัง serve users ได้
 
 ---
 

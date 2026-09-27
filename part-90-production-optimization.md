@@ -1,291 +1,263 @@
-# Part 90: Production Optimization
+# Part 90: Production Optimization for Spring Boot
 ## ขั้นตอนที่ 3201-3240
 
-**ระดับ:** ระดับโลก (World-Class)
-**เวลาเรียน:** 7-9 ชั่วโมง
-**เป้าหมาย:** เรียนรู้การ optimize Spring Boot applications สำหรับ production ครอบคลุม JVM tuning, GC selection, connection pools, thread pools, caching, และ HTTP/2
+**ระดับ:** World-Class (ระดับโลก)
+**เวลาเรียน:** 8-10 ชั่วโมง
+**เป้าหมาย:** เรียนรู้การ optimize Spring Boot application สำหรับ production จริง ครอบคลุม JVM tuning, Connection pool optimization, Thread pool tuning, Cache warming, HTTP/2, Lazy initialization และ AOT compilation
 
 ---
 
-## ขั้นตอนที่ 3201: JVM Tuning พื้นฐาน
+## ขั้นตอนที่ 3201: JVM Tuning - G1GC vs ZGC vs Shenandoah
 
-การ configure JVM อย่างถูกต้องส่งผลอย่างมากต่อ performance ของ Spring Boot applications
+การเลือก Garbage Collector (GC) ที่เหมาะสมมีผลอย่างมากต่อ latency และ throughput ของ application
 
-### JVM Flags พื้นฐาน
+### เปรียบเทียบ Garbage Collectors
+
+| GC | Pause Time | Throughput | Use Case | Java Version |
+|---|---|---|---|---|
+| G1GC | ~50-200ms | High | General purpose | 9+ (default) |
+| ZGC | <10ms | Medium | Low latency | 15+ (production) |
+| Shenandoah | <10ms | Medium | Low latency | 12+ (Red Hat) |
+| ParallelGC | High | Very High | Batch jobs | All |
+
+### G1GC Configuration (แนะนำสำหรับ most workloads)
 
 ```bash
-# run-production.sh
-
-# เปิดใช้งาน application พร้อม JVM options ที่ optimize แล้ว
-java \
-  # ---- Memory Settings ----
-  -Xms2g \                          # Initial heap size
-  -Xmx4g \                          # Maximum heap size
-  -XX:MetaspaceSize=256m \           # Initial metaspace
-  -XX:MaxMetaspaceSize=512m \        # Max metaspace
-  -XX:+UseCompressedOops \           # Compress object pointers (< 32GB heap)
-  -XX:+UseCompressedClassPointers \  # Compress class pointers
-  \
-  # ---- GC Settings (G1GC) ----
+# G1GC - สมดุลระหว่าง latency และ throughput
+java -server \
   -XX:+UseG1GC \
-  -XX:MaxGCPauseMillis=200 \         # Target max pause 200ms
-  -XX:G1HeapRegionSize=16m \         # G1 region size
-  -XX:G1NewSizePercent=30 \          # Min young generation %
-  -XX:G1MaxNewSizePercent=40 \       # Max young generation %
-  -XX:G1MixedGCCountTarget=8 \       # Mixed GC cycles
-  -XX:InitiatingHeapOccupancyPercent=45 \  # Trigger concurrent GC at 45%
-  \
-  # ---- JIT Compiler ----
-  -XX:+TieredCompilation \           # เปิด tiered compilation
-  -XX:ReservedCodeCacheSize=256m \   # Code cache สำหรับ JIT
-  -XX:+UseCodeCacheFlushing \        # Flush code cache เมื่อเต็ม
-  \
-  # ---- GC Logging ----
-  -Xlog:gc*:file=/var/log/app/gc.log:time,uptime:filecount=5,filesize=50m \
-  \
-  # ---- JVM Diagnostics ----
-  -XX:+HeapDumpOnOutOfMemoryError \  # Heap dump เมื่อ OOM
-  -XX:HeapDumpPath=/var/log/app/ \
-  -XX:+ExitOnOutOfMemoryError \      # ออกจากโปรแกรมเมื่อ OOM
-  \
-  # ---- Performance ----
-  -server \                          # Server VM mode
-  -XX:+OptimizeStringConcat \        # Optimize string operations
-  -XX:+UseStringDeduplication \      # Deduplicate strings (G1GC only)
-  \
-  # ---- Spring Boot specific ----
-  -Dspring.profiles.active=production \
-  -Dserver.port=8080 \
-  \
+  -XX:MaxGCPauseMillis=200 \
+  -XX:G1HeapRegionSize=16m \
+  -XX:G1NewSizePercent=20 \
+  -XX:G1MaxNewSizePercent=40 \
+  -XX:G1MixedGCCountTarget=8 \
+  -XX:InitiatingHeapOccupancyPercent=45 \
+  -Xms2g -Xmx4g \
   -jar app.jar
 ```
 
----
-
-## ขั้นตอนที่ 3202: G1GC vs ZGC vs Shenandoah
-
-การเลือก Garbage Collector ที่เหมาะสมกับ workload
+### ZGC Configuration (สำหรับ low-latency requirements)
 
 ```bash
-# G1GC - เหมาะสำหรับ: Balanced throughput/latency, heap < 32GB
-# ลักษณะ: Generational, region-based, concurrent marking
-JAVA_OPTS_G1="
-  -XX:+UseG1GC
-  -XX:MaxGCPauseMillis=200
-  -XX:G1HeapRegionSize=16m
-  -XX:ParallelGCThreads=8
-  -XX:ConcGCThreads=4
-"
-
-# ZGC - เหมาะสำหรับ: Ultra-low latency, large heaps (TB scale)
-# ลักษณะ: Non-generational (Java 11-20), concurrent, < 10ms pauses
-JAVA_OPTS_ZGC="
-  -XX:+UseZGC
-  -XX:ZAllocationSpikeTolerance=2
-  -XX:ZFragmentationLimit=25
-  -Xlog:gc*:file=/var/log/gc-zgc.log
-"
-
-# Shenandoah - เหมาะสำหรับ: Low latency, concurrent compaction
-# ลักษณะ: Region-based, concurrent evacuation, consistent low latency
-JAVA_OPTS_SHENANDOAH="
-  -XX:+UseShenandoahGC
-  -XX:ShenandoahGCHeuristics=adaptive
-  -XX:ShenandoahAllocationThreshold=10
-  -XX:ShenandoahInitFreeThreshold=70
-"
-
-# Generational ZGC (Java 21+) - ดีที่สุดสำหรับ ultra-low latency
-JAVA_OPTS_GEN_ZGC="
-  -XX:+UseZGC
-  -XX:+ZGenerational
-  -XX:MaxGCPauseMillis=5
-"
+# ZGC - pause time <10ms เหมาะกับ real-time applications
+java -server \
+  -XX:+UseZGC \
+  -XX:+ZGenerational \
+  -XX:MaxGCPauseMillis=10 \
+  -XX:SoftMaxHeapSize=6g \
+  -Xms4g -Xmx8g \
+  -XX:ZUncommitDelay=300 \
+  -jar app.jar
 ```
 
+### Shenandoah Configuration
+
+```bash
+# Shenandoah - low pause, good for containers
+java -server \
+  -XX:+UseShenandoahGC \
+  -XX:ShenandoahGCMode=adaptive \
+  -XX:ShenandoahGCHeuristics=adaptive \
+  -Xms2g -Xmx4g \
+  -jar app.jar
+```
+
+### GC Monitoring
+
 ```java
-// config/GcMetricsConfig.java
-package com.example.optimization.config;
-
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.binder.jvm.*;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryPoolMXBean;
-import java.lang.management.GarbageCollectorMXBean;
-import java.util.List;
-
-@Slf4j
+// config/GCMonitoringConfig.java
 @Configuration
-public class GcMetricsConfig {
-
-    // เพิ่ม JVM metrics
+@ConditionalOnProperty("app.gc-monitoring.enabled")
+public class GCMonitoringConfig {
+    
     @Bean
-    public JvmGcMetrics jvmGcMetrics() {
-        return new JvmGcMetrics();
-    }
-
-    @Bean
-    public JvmMemoryMetrics jvmMemoryMetrics() {
-        return new JvmMemoryMetrics();
-    }
-
-    @Bean
-    public JvmThreadMetrics jvmThreadMetrics() {
-        return new JvmThreadMetrics();
-    }
-
-    @Bean
-    public ClassLoaderMetrics classLoaderMetrics() {
-        return new ClassLoaderMetrics();
-    }
-
-    @Bean
-    public ProcessorMetrics processorMetrics() {
-        return new ProcessorMetrics();
-    }
-
-    // Log GC activity ที่สำคัญ
-    public void logGcInfo() {
-        List<GarbageCollectorMXBean> gcBeans = ManagementFactory.getGarbageCollectorMXBeans();
-        for (GarbageCollectorMXBean gc : gcBeans) {
-            log.info("GC: {} - Count: {}, Time: {}ms",
-                gc.getName(), gc.getCollectionCount(), gc.getCollectionTime());
-        }
+    public GCNotificationListener gcNotificationListener(MeterRegistry meterRegistry) {
+        GCNotificationListener listener = new GCNotificationListener(meterRegistry);
         
-        List<MemoryPoolMXBean> memPools = ManagementFactory.getMemoryPoolMXBeans();
-        for (MemoryPoolMXBean pool : memPools) {
-            if (pool.getUsage() != null) {
-                log.info("Memory Pool: {} - Used: {}MB, Max: {}MB",
-                    pool.getName(),
-                    pool.getUsage().getUsed() / 1024 / 1024,
-                    pool.getUsage().getMax() / 1024 / 1024);
+        // Register listener สำหรับทุก GC bean
+        for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
+            if (gcBean instanceof NotificationEmitter notificationEmitter) {
+                notificationEmitter.addNotificationListener(listener, null, null);
             }
         }
+        
+        return listener;
+    }
+}
+
+// monitoring/GCNotificationListener.java
+public class GCNotificationListener implements NotificationListener {
+    
+    private static final Logger log = LoggerFactory.getLogger(GCNotificationListener.class);
+    private final MeterRegistry meterRegistry;
+    
+    @Override
+    public void handleNotification(Notification notification, Object handback) {
+        GarbageCollectionNotificationInfo info = GarbageCollectionNotificationInfo
+            .from((CompositeData) notification.getUserData());
+        
+        GcInfo gcInfo = info.getGcInfo();
+        long duration = gcInfo.getDuration();
+        
+        // บันทึก metrics
+        meterRegistry.timer("jvm.gc.pause",
+            "cause", info.getGcCause(),
+            "action", info.getGcAction())
+            .record(duration, TimeUnit.MILLISECONDS);
+        
+        // Alert ถ้า pause นานเกินไป
+        if (duration > 500) {
+            log.warn("GC pause ยาวนาน: {}ms, cause={}", duration, info.getGcCause());
+        }
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3203: Heap Sizing Strategies
+## ขั้นตอนที่ 3202: Heap Sizing สำหรับ Containers
 
-การกำหนดขนาด heap ให้เหมาะสม
+### Container-Aware Memory Configuration
 
-```java
-// util/HeapAnalyzer.java
-package com.example.optimization.util;
+```bash
+# ใช้ MaxRAMPercentage แทน -Xmx เพื่อให้ adapt ตาม container limit
+java -XX:InitialRAMPercentage=50.0 \
+     -XX:MaxRAMPercentage=75.0 \
+     -XX:MinRAMPercentage=25.0 \
+     -jar app.jar
 
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
-
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
-import java.lang.management.MemoryUsage;
-
-@Slf4j
-@Component
-public class HeapAnalyzer {
-
-    private final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
-
-    // วิเคราะห์ heap ทุก 5 นาที
-    @Scheduled(fixedRate = 300000)
-    public void analyzeHeap() {
-        MemoryUsage heapUsage = memoryBean.getHeapMemoryUsage();
-        MemoryUsage nonHeapUsage = memoryBean.getNonHeapMemoryUsage();
-        
-        double heapUsedMB = heapUsage.getUsed() / 1024.0 / 1024.0;
-        double heapMaxMB = heapUsage.getMax() / 1024.0 / 1024.0;
-        double heapUtilization = heapUsedMB / heapMaxMB * 100;
-        
-        log.info("Heap: {:.1f}MB / {:.1f}MB ({:.1f}%)",
-            heapUsedMB, heapMaxMB, heapUtilization);
-        
-        // แจ้งเตือนถ้าใช้ heap เกิน 85%
-        if (heapUtilization > 85) {
-            log.warn("HIGH HEAP UTILIZATION: {:.1f}% - Consider increasing -Xmx",
-                heapUtilization);
-        }
-        
-        // แจ้งเตือนถ้าใช้ heap น้อยเกิน 30% สม่ำเสมอ
-        if (heapUtilization < 30) {
-            log.info("LOW HEAP UTILIZATION: {:.1f}% - Consider decreasing -Xmx to save memory",
-                heapUtilization);
-        }
-    }
-
-    // คำนวณ recommended heap size
-    public HeapRecommendation calculateRecommendation() {
-        MemoryUsage heapUsage = memoryBean.getHeapMemoryUsage();
-        long usedBytes = heapUsage.getUsed();
-        long maxBytes = heapUsage.getMax();
-        
-        // Recommended: live data * 3 (สำหรับ G1GC)
-        long recommendedMax = (long)(usedBytes * 3.5);
-        
-        // Minimum: ต้องมี 20% headroom
-        long minimumMax = (long)(usedBytes * 1.25);
-        
-        return new HeapRecommendation(
-            usedBytes / 1024 / 1024,
-            maxBytes / 1024 / 1024,
-            minimumMax / 1024 / 1024,
-            recommendedMax / 1024 / 1024
-        );
-    }
-
-    public record HeapRecommendation(
-        long currentUsedMB,
-        long currentMaxMB,
-        long minimumMaxMB,
-        long recommendedMaxMB
-    ) {}
-}
+# สูตรการคำนวณ:
+# Container Memory: 2GB
+# MaxRAMPercentage=75 → JVM heap max = 1.5GB
+# เหลือ 25% (512MB) สำหรับ OS, off-heap, etc.
 ```
 
----
+### Dockerfile ที่ถูกต้อง
 
-## ขั้นตอนที่ 3204: Connection Pool Optimization
+```dockerfile
+# Dockerfile
+FROM eclipse-temurin:21-jre-alpine
 
-การ optimize HikariCP (default connection pool ของ Spring Boot)
+# สร้าง non-root user
+RUN addgroup -S spring && adduser -S spring -G spring
+
+WORKDIR /app
+
+# Copy jar
+COPY target/shophub-*.jar app.jar
+
+# ให้สิทธิ์ไฟล์
+RUN chown spring:spring app.jar
+
+USER spring
+
+# JVM flags สำหรับ container
+ENV JAVA_OPTS="-XX:+UseZGC \
+               -XX:+ZGenerational \
+               -XX:InitialRAMPercentage=50.0 \
+               -XX:MaxRAMPercentage=75.0 \
+               -XX:+ExitOnOutOfMemoryError \
+               -XX:+HeapDumpOnOutOfMemoryError \
+               -XX:HeapDumpPath=/tmp/heapdump.hprof \
+               -Djava.security.egd=file:/dev/./urandom"
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+```
+
+### Kubernetes Resource Configuration
 
 ```yaml
-# application.yml - HikariCP Configuration
+# k8s/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shophub-api
+spec:
+  template:
+    spec:
+      containers:
+      - name: shophub-api
+        image: shophub/api:latest
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"    # Container limit = 1GB
+            cpu: "1000m"
+        env:
+        - name: JAVA_OPTS
+          value: >-
+            -XX:+UseZGC
+            -XX:MaxRAMPercentage=75.0
+            -XX:InitialRAMPercentage=50.0
+            -XX:+ExitOnOutOfMemoryError
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+```
+
+---
+
+## ขั้นตอนที่ 3203: HikariCP Connection Pool Optimization
+
+HikariCP เป็น default connection pool ใน Spring Boot ซึ่งต้องการการ tune อย่างระมัดระวัง
+
+### สูตรการคำนวณ Pool Size
+
+```
+สูตรของ HikariCP:
+pool_size = Tn × (Cm - 1) + 1
+
+โดยที่:
+- Tn = จำนวน threads ที่ใช้ DB พร้อมกัน
+- Cm = จำนวน queries ต่อ transaction
+
+ตัวอย่าง:
+- Tomcat threads = 200
+- Queries per transaction = 2
+- pool_size = 200 × (2-1) + 1 = 201
+
+แต่ในทางปฏิบัติ ใช้: pool_size = (core_count × 2) + effective_spindle_count
+สำหรับ 4-core CPU: pool_size = (4 × 2) + 1 = 9
+```
+
+### HikariCP Configuration
+
+```yaml
+# application.yml
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/mydb
-    username: ${DB_USERNAME}
+    url: jdbc:postgresql://localhost:5432/shophub
+    username: ${DB_USER}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
-    
     hikari:
-      # Pool size
-      minimum-idle: 5          # connections ขั้นต่ำในช่วง idle
-      maximum-pool-size: 20    # connections สูงสุด
+      # Pool sizing
+      minimum-idle: 5           # Connections ขั้นต่ำ
+      maximum-pool-size: 20     # Connections สูงสุด
       
-      # Timeouts
-      connection-timeout: 30000      # รอ connection สูงสุด 30 วินาที
-      idle-timeout: 600000           # connection idle หมดอายุใน 10 นาที
-      max-lifetime: 1800000          # connection อายุสูงสุด 30 นาที
-      keepalive-time: 300000         # ping ทุก 5 นาทีเพื่อป้องกัน timeout
+      # Timeout settings
+      connection-timeout: 30000       # รอ connection สูงสุด 30s
+      idle-timeout: 600000            # Connection ไม่ใช้ 10 นาที → close
+      max-lifetime: 1800000           # Connection อายุสูงสุด 30 นาที
+      keepalive-time: 300000          # Ping ทุก 5 นาที
       
-      # Connection validation
+      # Performance
       connection-test-query: SELECT 1
-      validation-timeout: 5000       # ตรวจสอบ connection ภายใน 5 วินาที
+      pool-name: ShophubPool
       
-      # Leak detection
-      leak-detection-threshold: 60000  # แจ้งเตือนถ้า connection ถูกยืมนาน > 1 นาที
-      
-      # Pool name for monitoring
-      pool-name: MainHikariPool
-      
-      # Register MBeans for monitoring
-      register-mbeans: true
+      # ตรวจสอบ connection quality
+      leak-detection-threshold: 60000  # แจ้งเตือนถ้า connection ไม่คืน 60s
       
       # Data source properties
       data-source-properties:
@@ -293,6 +265,7 @@ spring:
         prepStmtCacheSize: 250
         prepStmtCacheSqlLimit: 2048
         useServerPrepStmts: true
+        useLocalSessionState: true
         rewriteBatchedStatements: true
         cacheResultSetMetadata: true
         cacheServerConfiguration: true
@@ -300,1107 +273,831 @@ spring:
         maintainTimeStats: false
 ```
 
+### Dynamic Pool Sizing Based on Load
+
 ```java
-// config/DataSourceConfig.java
-package com.example.optimization.config;
-
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
-
-import javax.sql.DataSource;
-
-@Slf4j
+// config/DynamicPoolConfig.java
 @Configuration
-public class DataSourceConfig {
-
-    @Value("${spring.datasource.url}")
-    private String jdbcUrl;
-
-    @Value("${spring.datasource.username}")
-    private String username;
-
-    @Value("${spring.datasource.password}")
-    private String password;
-
-    // Primary datasource สำหรับ writes (read-write)
-    @Bean
-    @Primary
-    public DataSource primaryDataSource() {
-        HikariConfig config = new HikariConfig();
-        config.setJdbcUrl(jdbcUrl);
-        config.setUsername(username);
-        config.setPassword(password);
-        config.setPoolName("WriterPool");
-        config.setMaximumPoolSize(20);
-        config.setMinimumIdle(5);
-        config.setConnectionTimeout(30000);
-        config.setIdleTimeout(600000);
-        config.setMaxLifetime(1800000);
-        config.setLeakDetectionThreshold(60000);
+@EnableScheduling
+public class DynamicPoolConfig {
+    
+    private final HikariDataSource dataSource;
+    private final MeterRegistry meterRegistry;
+    
+    @Scheduled(fixedRate = 60000) // ตรวจสอบทุก 1 นาที
+    public void adjustPoolSize() {
+        int activeConnections = dataSource.getHikariPoolMXBean().getActiveConnections();
+        int maxPoolSize = dataSource.getMaximumPoolSize();
         
-        // PostgreSQL-specific optimizations
-        config.addDataSourceProperty("prepareThreshold", "5");
-        config.addDataSourceProperty("preparedStatementCacheQueries", "256");
-        config.addDataSourceProperty("preparedStatementCacheSizeMiB", "5");
+        double utilization = (double) activeConnections / maxPoolSize;
         
-        log.info("Primary datasource configured: pool size={}", 20);
-        return new HikariDataSource(config);
-    }
-
-    // Read-only datasource (replica)
-    @Bean("readOnlyDataSource")
-    public DataSource readOnlyDataSource(
-            @Value("${spring.datasource.replica.url:${spring.datasource.url}}") String replicaUrl) {
-        HikariConfig config = new HikariConfig();
-        config.setJdbcUrl(replicaUrl);
-        config.setUsername(username);
-        config.setPassword(password);
-        config.setPoolName("ReaderPool");
-        config.setMaximumPoolSize(30); // Read pool ใหญ่กว่า
-        config.setMinimumIdle(10);
-        config.setReadOnly(true); // กำหนดเป็น read-only
-        config.setConnectionTimeout(15000); // Timeout เร็วกว่า write
+        if (utilization > 0.8 && maxPoolSize < 50) {
+            // เพิ่ม pool size เมื่อใช้งานสูง
+            int newSize = Math.min(maxPoolSize + 5, 50);
+            dataSource.setMaximumPoolSize(newSize);
+            log.info("เพิ่ม pool size เป็น {}", newSize);
+        } else if (utilization < 0.3 && maxPoolSize > 10) {
+            // ลด pool size เมื่อใช้งานต่ำ
+            int newSize = Math.max(maxPoolSize - 5, 10);
+            dataSource.setMaximumPoolSize(newSize);
+            log.info("ลด pool size เป็น {}", newSize);
+        }
         
-        log.info("Read-only datasource configured: pool size={}", 30);
-        return new HikariDataSource(config);
+        // Record metrics
+        meterRegistry.gauge("db.pool.utilization", utilization);
     }
 }
 ```
 
+### Multiple DataSources
+
 ```java
-// monitoring/ConnectionPoolMonitor.java
-package com.example.optimization.monitoring;
+// config/MultiDataSourceConfig.java
+@Configuration
+public class MultiDataSourceConfig {
+    
+    // Primary datasource สำหรับ write operations
+    @Bean
+    @Primary
+    @ConfigurationProperties("spring.datasource.primary")
+    public DataSource primaryDataSource() {
+        return DataSourceBuilder.create()
+            .type(HikariDataSource.class)
+            .build();
+    }
+    
+    // Read replica สำหรับ read operations
+    @Bean
+    @ConfigurationProperties("spring.datasource.replica")
+    public DataSource replicaDataSource() {
+        return DataSourceBuilder.create()
+            .type(HikariDataSource.class)
+            .build();
+    }
+    
+    // Routing datasource ที่เลือก primary/replica อัตโนมัติ
+    @Bean
+    public DataSource routingDataSource(
+            @Qualifier("primaryDataSource") DataSource primary,
+            @Qualifier("replicaDataSource") DataSource replica) {
+        
+        RoutingDataSource routing = new RoutingDataSource();
+        routing.setTargetDataSources(Map.of(
+            DataSourceType.PRIMARY, primary,
+            DataSourceType.REPLICA, replica
+        ));
+        routing.setDefaultTargetDataSource(primary);
+        return routing;
+    }
+}
 
-import com.zaxxer.hikari.HikariDataSource;
-import com.zaxxer.hikari.pool.HikariPool;
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
+// Read-only transactions จะ route ไป replica อัตโนมัติ
+@Service
+@Transactional(readOnly = true) // → replica
+public class ProductQueryService {
+    
+    public List<Product> findAll(ProductFilter filter) {
+        return productRepository.findWithFilter(filter);
+    }
+}
 
-import javax.sql.DataSource;
-
-@Slf4j
-@Component
-@RequiredArgsConstructor
-public class ConnectionPoolMonitor {
-
-    private final DataSource primaryDataSource;
-    private final MeterRegistry meterRegistry;
-
-    // Monitor pool metrics ทุกนาที
-    @Scheduled(fixedRate = 60000)
-    public void monitorConnectionPool() {
-        if (primaryDataSource instanceof HikariDataSource hikariDs) {
-            var poolProxy = hikariDs.getHikariPoolMXBean();
-            if (poolProxy != null) {
-                int active = poolProxy.getActiveConnections();
-                int idle = poolProxy.getIdleConnections();
-                int waiting = poolProxy.getThreadsAwaitingConnection();
-                int total = poolProxy.getTotalConnections();
-                
-                log.info("Connection Pool - Active: {}, Idle: {}, Waiting: {}, Total: {}",
-                    active, idle, waiting, total);
-                
-                // แจ้งเตือนถ้า connection หมด pool
-                if (waiting > 0) {
-                    log.warn("Threads waiting for connection: {} - Consider increasing pool size",
-                        waiting);
-                }
-                
-                // แจ้งเตือนถ้า pool utilization สูง
-                double utilization = (double) active / total * 100;
-                if (utilization > 80) {
-                    log.warn("High connection pool utilization: {:.1f}%", utilization);
-                }
-            }
-        }
+@Service
+@Transactional // → primary (default)
+public class ProductCommandService {
+    
+    public Product save(Product product) {
+        return productRepository.save(product);
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3205: Thread Pool Tuning
+## ขั้นตอนที่ 3204: Tomcat Thread Pool Tuning
 
-การ configure thread pools สำหรับ async operations
+```yaml
+# application.yml
+server:
+  tomcat:
+    threads:
+      min-spare: 10           # Threads ขั้นต่ำที่ keep alive
+      max: 200                # Threads สูงสุด
+    max-connections: 8192     # Connections สูงสุด
+    accept-count: 100         # Queue ก่อน reject
+    connection-timeout: 20000 # Connection timeout
+    keep-alive-timeout: 60000 # Keep-alive timeout
+    
+  # Compression
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/xml,text/plain
+    min-response-size: 1024   # Compress ถ้า response > 1KB
+```
+
+### Custom Thread Pool สำหรับ Async Tasks
 
 ```java
 // config/ThreadPoolConfig.java
-package com.example.optimization.config;
-
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.EnableAsync;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-
-import java.util.concurrent.*;
-
-@Slf4j
 @Configuration
 @EnableAsync
 public class ThreadPoolConfig {
-
-    @Value("${app.thread-pool.core-size:10}")
-    private int coreSize;
-
-    @Value("${app.thread-pool.max-size:50}")
-    private int maxSize;
-
-    @Value("${app.thread-pool.queue-capacity:1000}")
-    private int queueCapacity;
-
-    // Main async executor
-    @Bean("taskExecutor")
-    public ThreadPoolTaskExecutor taskExecutor(MeterRegistry meterRegistry) {
+    
+    // Thread pool สำหรับ general async tasks
+    @Bean(name = "taskExecutor")
+    public TaskExecutor taskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        
-        // Core = จำนวน threads ที่ active อยู่เสมอ
-        executor.setCorePoolSize(coreSize);
-        
-        // Max = จำนวน threads สูงสุด (เพิ่มเมื่อ queue เต็ม)
-        executor.setMaxPoolSize(maxSize);
-        
-        // Queue capacity = จำนวน tasks ที่รอในคิว
-        executor.setQueueCapacity(queueCapacity);
-        
-        // Thread naming
-        executor.setThreadNamePrefix("app-async-");
-        
-        // Rejection policy เมื่อ pool และ queue เต็ม
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        
-        // Wait for tasks ก่อน shutdown
-        executor.setWaitForTasksToCompleteOnShutdown(true);
-        executor.setAwaitTerminationSeconds(60);
-        
-        executor.initialize();
-        
-        // เพิ่ม metrics monitoring
-        ExecutorServiceMetrics.monitor(
-            meterRegistry,
-            executor.getThreadPoolExecutor(),
-            "app-async-pool"
-        );
-        
-        log.info("Task executor configured: core={}, max={}, queue={}",
-            coreSize, maxSize, queueCapacity);
-        return executor;
-    }
-
-    // I/O-intensive executor - threads มากกว่า CPU cores
-    @Bean("ioExecutor")
-    public ThreadPoolTaskExecutor ioExecutor(MeterRegistry meterRegistry) {
-        int cpuCores = Runtime.getRuntime().availableProcessors();
-        int ioThreads = cpuCores * 4; // I/O ใช้ threads มากกว่า
-        
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(ioThreads);
-        executor.setMaxPoolSize(ioThreads * 2);
+        executor.setCorePoolSize(Runtime.getRuntime().availableProcessors() * 2);
+        executor.setMaxPoolSize(Runtime.getRuntime().availableProcessors() * 4);
         executor.setQueueCapacity(500);
-        executor.setThreadNamePrefix("io-async-");
+        executor.setThreadNamePrefix("async-");
+        executor.setKeepAliveSeconds(60);
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(30);
         executor.initialize();
-        
-        ExecutorServiceMetrics.monitor(meterRegistry,
-            executor.getThreadPoolExecutor(), "io-pool");
-        
-        log.info("I/O executor configured: threads={}", ioThreads);
         return executor;
     }
-
-    // CPU-intensive executor - ใช้ threads เท่ากับ CPU cores
-    @Bean("cpuExecutor")
-    public ThreadPoolTaskExecutor cpuExecutor(MeterRegistry meterRegistry) {
-        int cpuCores = Runtime.getRuntime().availableProcessors();
-        
+    
+    // Thread pool เฉพาะสำหรับ I/O operations
+    @Bean(name = "ioExecutor")
+    public TaskExecutor ioExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(cpuCores);
-        executor.setMaxPoolSize(cpuCores);
+        executor.setCorePoolSize(50);
+        executor.setMaxPoolSize(100);
         executor.setQueueCapacity(200);
-        executor.setThreadNamePrefix("cpu-async-");
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.setThreadNamePrefix("io-");
         executor.initialize();
-        
-        ExecutorServiceMetrics.monitor(meterRegistry,
-            executor.getThreadPoolExecutor(), "cpu-pool");
-        
-        log.info("CPU executor configured: threads={}", cpuCores);
         return executor;
     }
+    
+    // Thread pool สำหรับ notification tasks
+    @Bean(name = "notificationExecutor")
+    public TaskExecutor notificationExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(5);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(1000);
+        executor.setThreadNamePrefix("notify-");
+        executor.initialize();
+        return executor;
+    }
+}
+```
 
-    // Scheduled tasks executor
-    @Bean("scheduledExecutor")
-    public ScheduledExecutorService scheduledExecutor() {
-        return Executors.newScheduledThreadPool(
-            Runtime.getRuntime().availableProcessors(),
-            r -> {
-                Thread t = new Thread(r);
-                t.setName("scheduled-" + t.getId());
-                t.setDaemon(true);
-                return t;
-            }
-        );
+### Virtual Threads (Java 21+)
+
+```java
+// config/VirtualThreadConfig.java
+@Configuration
+@ConditionalOnJava(JavaVersion.TWENTY_ONE)
+public class VirtualThreadConfig {
+    
+    @Bean
+    public TomcatProtocolHandlerCustomizer<?> protocolHandlerVirtualThreadExecutorCustomizer() {
+        return protocolHandler -> {
+            // ใช้ Virtual Threads สำหรับ Tomcat
+            protocolHandler.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        };
+    }
+    
+    @Bean(name = "virtualThreadExecutor")
+    public AsyncTaskExecutor applicationTaskExecutor() {
+        return new TaskExecutorAdapter(Executors.newVirtualThreadPerTaskExecutor());
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3206: Cache Warming Strategies
+## ขั้นตอนที่ 3205: Cache Warming on Startup
 
-การ warm up caches ก่อนที่ traffic จะเข้ามา
+การ warm up cache ก่อน traffic จริง ช่วยป้องกัน cold start problem
 
 ```java
-// cache/CacheWarmupService.java
-package com.example.optimization.cache;
-
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.cache.CacheManager;
-import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
-
-import java.time.Duration;
-import java.time.Instant;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-
-@Slf4j
+// startup/CacheWarmupService.java
 @Service
-@RequiredArgsConstructor
-public class CacheWarmupService {
-
+@Slf4j
+public class CacheWarmupService implements ApplicationListener<ApplicationReadyEvent> {
+    
+    private final ProductService productService;
+    private final CategoryService categoryService;
+    private final PromotionService promotionService;
     private final CacheManager cacheManager;
-    private final ProductRepository productRepository;
-    private final CategoryRepository categoryRepository;
-    private final ConfigRepository configRepository;
-
-    // เริ่ม warmup หลัง application พร้อมใช้งาน
-    @EventListener(ApplicationReadyEvent.class)
-    @Async("taskExecutor")
-    public void warmupCachesOnStartup() {
-        Instant start = Instant.now();
-        log.info("Starting cache warmup...");
+    
+    @Override
+    public void onApplicationEvent(ApplicationReadyEvent event) {
+        log.info("เริ่ม cache warming...");
+        long startTime = System.currentTimeMillis();
         
-        // Warmup caches แบบ parallel
-        CompletableFuture<Void> productWarmup = CompletableFuture.runAsync(
-            this::warmupProductCache);
-        CompletableFuture<Void> categoryWarmup = CompletableFuture.runAsync(
-            this::warmupCategoryCache);
-        CompletableFuture<Void> configWarmup = CompletableFuture.runAsync(
-            this::warmupConfigCache);
-        
-        CompletableFuture.allOf(productWarmup, categoryWarmup, configWarmup).join();
-        
-        Duration elapsed = Duration.between(start, Instant.now());
-        log.info("Cache warmup completed in {}ms", elapsed.toMillis());
-    }
-
-    // Warmup product cache - top 1000 products
-    private void warmupProductCache() {
         try {
-            log.info("Warming up product cache...");
-            List<Product> topProducts = productRepository.findTopActiveProducts(1000);
+            warmProductCache();
+            warmCategoryCache();
+            warmPromotionCache();
             
-            var cache = cacheManager.getCache("products");
-            if (cache != null) {
-                topProducts.forEach(product -> {
-                    cache.put(product.getId(), product);
-                    cache.put("sku:" + product.getSku(), product);
-                });
-            }
-            
-            log.info("Product cache warmed up: {} products", topProducts.size());
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("Cache warming เสร็จสิ้นใน {}ms", duration);
         } catch (Exception e) {
-            log.error("Failed to warmup product cache", e);
+            log.warn("Cache warming ล้มเหลว แต่ application ยังทำงานได้", e);
         }
     }
-
-    // Warmup category cache - ทุก categories
-    private void warmupCategoryCache() {
-        try {
-            log.info("Warming up category cache...");
-            List<Category> categories = categoryRepository.findAllActive();
-            
-            var cache = cacheManager.getCache("categories");
-            if (cache != null) {
-                categories.forEach(cat -> cache.put(cat.getId(), cat));
-                cache.put("all", categories);
-            }
-            
-            log.info("Category cache warmed up: {} categories", categories.size());
-        } catch (Exception e) {
-            log.error("Failed to warmup category cache", e);
-        }
+    
+    private void warmProductCache() {
+        log.info("กำลัง warm product cache...");
+        
+        // Load top 1000 products ที่ถูก view บ่อยที่สุด
+        List<String> popularProductIds = getPopularProductIds();
+        
+        popularProductIds.parallelStream()
+            .forEach(productId -> {
+                try {
+                    productService.findById(productId); // triggers cache put
+                } catch (Exception e) {
+                    log.debug("ไม่สามารถ warm product {}", productId);
+                }
+            });
+        
+        log.info("Warm {} products เสร็จสิ้น", popularProductIds.size());
     }
-
-    // Warmup config cache
-    private void warmupConfigCache() {
-        try {
-            log.info("Warming up config cache...");
-            List<AppConfig> configs = configRepository.findAll();
-            
-            var cache = cacheManager.getCache("configs");
-            if (cache != null) {
-                configs.forEach(config -> cache.put(config.getKey(), config.getValue()));
-            }
-            
-            log.info("Config cache warmed up: {} configs", configs.size());
-        } catch (Exception e) {
-            log.error("Failed to warmup config cache", e);
-        }
+    
+    private void warmCategoryCache() {
+        // Load all categories (usually small set)
+        categoryService.findAll().forEach(category -> {
+            // triggers cache
+        });
     }
+    
+    private void warmPromotionCache() {
+        // Load active promotions
+        promotionService.findActive().forEach(promotion -> {
+            // triggers cache
+        });
+    }
+    
+    @Cacheable("popularProductIds")
+    private List<String> getPopularProductIds() {
+        return analyticsRepository.findTopProductIds(1000);
+    }
+}
+```
 
-    // Scheduled re-warmup ทุกชั่วโมง
-    @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 * * * *")
-    @Async("taskExecutor")
-    public void scheduledCacheWarmup() {
-        log.info("Running scheduled cache re-warmup...");
-        warmupCachesOnStartup();
+### Layered Cache Configuration
+
+```java
+// config/CacheConfig.java
+@Configuration
+@EnableCaching
+public class CacheConfig {
+    
+    @Bean
+    public CacheManager cacheManager(RedisConnectionFactory redisFactory) {
+        // L1: Local in-memory cache (Caffeine)
+        CaffeineCacheManager caffeineCacheManager = new CaffeineCacheManager();
+        caffeineCacheManager.setCaffeine(Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .recordStats()
+        );
+        
+        // L2: Distributed cache (Redis)
+        RedisCacheManager redisCacheManager = RedisCacheManager.builder(redisFactory)
+            .cacheDefaults(RedisCacheConfiguration.defaultCacheConfig()
+                .entryTtl(Duration.ofHours(1))
+                .serializeValuesWith(RedisSerializationContext.SerializationPair
+                    .fromSerializer(new GenericJackson2JsonRedisSerializer())))
+            .withCacheConfiguration("products", 
+                RedisCacheConfiguration.defaultCacheConfig()
+                    .entryTtl(Duration.ofMinutes(30)))
+            .withCacheConfiguration("userSessions",
+                RedisCacheConfiguration.defaultCacheConfig()
+                    .entryTtl(Duration.ofHours(24)))
+            .build();
+        
+        // Composite cache: check L1 first, then L2
+        return new CompositeCacheManager(caffeineCacheManager, redisCacheManager);
+    }
+}
+```
+
+### Cache Metrics
+
+```java
+// monitoring/CacheMetricsConfig.java
+@Configuration
+public class CacheMetricsConfig {
+    
+    @Bean
+    public CacheMetricsRegistrar cacheMetricsRegistrar(
+            Collection<CacheManager> cacheManagers,
+            MeterRegistry meterRegistry) {
+        
+        cacheManagers.forEach(cm -> {
+            cm.getCacheNames().forEach(cacheName -> {
+                Cache cache = cm.getCache(cacheName);
+                if (cache instanceof CaffeineCache caffeineCache) {
+                    // Register Caffeine cache metrics
+                    CaffeineCacheMetrics.monitor(
+                        meterRegistry,
+                        caffeineCache.getNativeCache(),
+                        cacheName
+                    );
+                }
+            });
+        });
+        
+        return new CacheMetricsRegistrar(cacheManagers, meterRegistry);
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3207: Lazy Loading vs Eager Loading
+## ขั้นตอนที่ 3206: HTTP/2 Configuration
 
-การเลือกใช้ lazy/eager loading ให้เหมาะสม
-
-```java
-// entity/Product.java
-package com.example.optimization.entity;
-
-import lombok.*;
-import javax.persistence.*;
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
-
-@Entity
-@Table(name = "products", indexes = {
-    @Index(name = "idx_product_sku", columnList = "sku"),
-    @Index(name = "idx_product_category", columnList = "category_id"),
-    @Index(name = "idx_product_status", columnList = "status")
-})
-@Getter
-@Setter
-@NoArgsConstructor
-public class Product {
-    
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-    
-    @Column(unique = true)
-    private String sku;
-    
-    private String name;
-    private BigDecimal price;
-    private String status;
-    
-    // EAGER - โหลดพร้อมกัน (เหมาะเมื่อใช้เสมอ)
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "category_id")
-    private Category category;
-    
-    // LAZY - โหลดเมื่อเรียกใช้ (เหมาะเมื่อไม่ได้ใช้บ่อย)
-    @OneToMany(mappedBy = "product", fetch = FetchType.LAZY,
-        cascade = CascadeType.ALL)
-    private List<ProductImage> images = new ArrayList<>();
-    
-    @OneToMany(mappedBy = "product", fetch = FetchType.LAZY)
-    private List<Review> reviews = new ArrayList<>();
-    
-    // LAZY for large collections
-    @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(name = "product_tags",
-        joinColumns = @JoinColumn(name = "product_id"),
-        inverseJoinColumns = @JoinColumn(name = "tag_id"))
-    private Set<Tag> tags;
-}
-```
-
-```java
-// repository/ProductRepository.java
-package com.example.optimization.repository;
-
-import com.example.optimization.entity.Product;
-import org.springframework.data.jpa.repository.EntityGraph;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.stereotype.Repository;
-
-import java.util.List;
-import java.util.Optional;
-
-@Repository
-public interface ProductRepository extends JpaRepository<Product, Long> {
-
-    // Eager load images ด้วย EntityGraph (แทน N+1 problem)
-    @EntityGraph(attributePaths = {"images", "category"})
-    Optional<Product> findWithImagesBySku(String sku);
-
-    // Fetch join สำหรับ collection
-    @Query("SELECT DISTINCT p FROM Product p " +
-           "LEFT JOIN FETCH p.images " +
-           "LEFT JOIN FETCH p.tags " +
-           "WHERE p.status = 'ACTIVE'")
-    List<Product> findActiveProductsWithDetails();
-
-    // Projection สำหรับ list views (เร็วกว่า entity)
-    @Query("SELECT new com.example.optimization.dto.ProductSummary(" +
-           "p.id, p.sku, p.name, p.price, p.status) " +
-           "FROM Product p WHERE p.status = 'ACTIVE' " +
-           "ORDER BY p.name")
-    List<ProductSummary> findProductSummaries();
-
-    // Top products สำหรับ cache warmup
-    @Query("SELECT p FROM Product p WHERE p.status = 'ACTIVE' " +
-           "ORDER BY p.viewCount DESC")
-    List<Product> findTopActiveProducts(int limit);
-}
-```
-
----
-
-## ขั้นตอนที่ 3208: HTTP/2 และ Connection Multiplexing
-
-การ configure HTTP/2 ใน Spring Boot
+HTTP/2 ช่วยลด latency ด้วย multiplexing, header compression และ server push
 
 ```yaml
-# application.yml - HTTP/2 Configuration
+# application.yml
 server:
   port: 8443
-  ssl:
+  http2:
     enabled: true
+  ssl:
     key-store: classpath:keystore.p12
     key-store-password: ${SSL_KEYSTORE_PASSWORD}
     key-store-type: PKCS12
-    key-alias: myapp
+    key-alias: shophub
+    enabled: true
     protocol: TLS
     enabled-protocols: TLSv1.2,TLSv1.3
-    ciphers:
-      - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-      - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-  
-  http2:
-    enabled: true    # เปิดใช้ HTTP/2
-  
-  tomcat:
-    threads:
-      min-spare: 10
-      max: 200       # Max threads
-    max-connections: 10000   # Max connections
-    accept-count: 100        # Queue size เมื่อ threads เต็ม
-    connection-timeout: 20000
-    keep-alive-timeout: 60000
-    max-keep-alive-requests: 100
-    
-    # Compression
-    compression:
-      enabled: true
-      mime-types: application/json,text/html,text/css,application/javascript
-      min-response-size: 1024   # Compress เมื่อ response > 1KB
 ```
 
+### HTTP/2 Push (Server Push)
+
 ```java
-// config/TomcatConfig.java
-package com.example.optimization.config;
+// controller/ProductController.java
+@RestController
+@RequestMapping("/api/v1")
+public class ProductController {
+    
+    @GetMapping("/products/{id}")
+    public ResponseEntity<Product> getProduct(
+            @PathVariable String id,
+            HttpServletRequest request) {
+        
+        Product product = productService.findById(id);
+        
+        // HTTP/2 Server Push - ส่ง related resources ล่วงหน้า
+        if (request.getServletContext().getMajorVersion() >= 3) {
+            PushBuilder pushBuilder = request.newPushBuilder();
+            if (pushBuilder != null) {
+                // Push product images
+                pushBuilder.path("/api/v1/products/" + id + "/images")
+                    .push();
+                
+                // Push related products
+                pushBuilder.path("/api/v1/products/" + id + "/related")
+                    .push();
+            }
+        }
+        
+        return ResponseEntity.ok()
+            .cacheControl(CacheControl.maxAge(Duration.ofMinutes(5)))
+            .body(product);
+    }
+}
+```
 
-import lombok.extern.slf4j.Slf4j;
-import org.apache.coyote.http2.Http2Protocol;
-import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
-import org.springframework.boot.web.server.WebServerFactoryCustomizer;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+### HTTP/2 Connector for Development (HTTP/2 without SSL)
 
-@Slf4j
+```java
+// config/Http2Config.java
 @Configuration
-public class TomcatConfig {
-
+@Profile("dev")
+public class Http2Config {
+    
     @Bean
-    public WebServerFactoryCustomizer<TomcatServletWebServerFactory> tomcatCustomizer() {
-        return factory -> {
-            factory.addConnectorCustomizers(connector -> {
-                // กำหนด HTTP/2 protocol
-                connector.addUpgradeProtocol(new Http2Protocol());
-                
-                // Tune connector settings
-                connector.setProperty("maxConnections", "10000");
-                connector.setProperty("acceptCount", "100");
-                connector.setProperty("connectionTimeout", "20000");
-                connector.setProperty("maxKeepAliveRequests", "100");
-                connector.setProperty("keepAliveTimeout", "60000");
-                
-                // NIO connector settings
-                connector.setProperty("socket.soKeepAlive", "true");
-                connector.setProperty("socket.performanceBandwidth", "2");
-                connector.setProperty("socket.performanceConnectionTime", "2");
-                connector.setProperty("socket.performanceLatency", "2");
-                
-                log.info("Tomcat connector customized with HTTP/2 support");
-            });
+    public TomcatServletWebServerFactory tomcatServletWebServerFactory() {
+        TomcatServletWebServerFactory factory = new TomcatServletWebServerFactory();
+        
+        factory.addConnectorCustomizers(connector -> {
+            connector.setScheme("http");
+            Http11NioProtocol protocol = (Http11NioProtocol) connector.getProtocolHandler();
+            protocol.setMaxHttpHeaderSize(65536);
+        });
+        
+        // Enable h2c (HTTP/2 cleartext) for development
+        factory.addConnectorCustomizers(connector -> {
+            connector.addUpgradeProtocol(new Http2Protocol());
+        });
+        
+        return factory;
+    }
+}
+```
+
+---
+
+## ขั้นตอนที่ 3207: Lazy Initialization สำหรับ Faster Startup
+
+```yaml
+# application.yml
+spring:
+  main:
+    lazy-initialization: true  # Enable global lazy init
+    
+# ปัญหา: lazy init อาจซ่อน configuration errors
+# แก้ไข: เพิ่ม eager beans สำหรับ critical components
+```
+
+### Selective Eager Loading
+
+```java
+// config/EagerInitializationConfig.java
+@Configuration
+public class EagerInitializationConfig {
+    
+    // Force eager initialization ของ critical beans
+    @Bean
+    public static BeanFactoryPostProcessor eagerBeanInitializer() {
+        return beanFactory -> {
+            // Beans เหล่านี้จะถูก initialize ทันที ไม่ว่าจะ enable lazy init
+            String[] criticalBeans = {
+                "dataSource",
+                "entityManagerFactory",
+                "transactionManager",
+                "securityFilterChain",
+                "cacheManager"
+            };
+            
+            for (String beanName : criticalBeans) {
+                if (beanFactory instanceof DefaultListableBeanFactory dlbf) {
+                    BeanDefinition bd = dlbf.getBeanDefinition(beanName);
+                    bd.setLazyInit(false);
+                }
+            }
         };
     }
 }
-```
 
----
-
-## ขั้นตอนที่ 3209: Application Performance Monitoring
-
-การวัดและตรวจสอบ performance ของ application
-
-```java
-// monitoring/PerformanceMonitor.java
-package com.example.optimization.monitoring;
-
-import io.micrometer.core.annotation.Timed;
-import io.micrometer.core.instrument.*;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.Around;
-import org.aspectj.lang.annotation.Aspect;
-import org.springframework.stereotype.Component;
-
-import java.util.concurrent.TimeUnit;
-
-@Slf4j
-@Aspect
-@Component
-@RequiredArgsConstructor
-public class PerformanceMonitor {
-
-    private final MeterRegistry meterRegistry;
-
-    // วัด execution time ของ service methods
-    @Around("@annotation(io.micrometer.core.annotation.Timed)")
-    public Object measureMethodTime(ProceedingJoinPoint joinPoint) throws Throwable {
-        String className = joinPoint.getTarget().getClass().getSimpleName();
-        String methodName = joinPoint.getSignature().getName();
-        String metricName = "method.execution.time";
-        
-        long start = System.nanoTime();
-        Object result = null;
-        boolean success = true;
-        
-        try {
-            result = joinPoint.proceed();
-            return result;
-        } catch (Exception e) {
-            success = false;
-            throw e;
-        } finally {
-            long duration = System.nanoTime() - start;
-            
-            // บันทึก metrics
-            Timer.builder(metricName)
-                .tag("class", className)
-                .tag("method", methodName)
-                .tag("success", String.valueOf(success))
-                .register(meterRegistry)
-                .record(duration, TimeUnit.NANOSECONDS);
-            
-            // Log ถ้าช้าเกิน 1 วินาที
-            if (duration > 1_000_000_000L) {
-                log.warn("Slow method detected: {}.{} took {}ms",
-                    className, methodName, duration / 1_000_000);
-            }
-        }
-    }
-}
-```
-
-```java
-// service/ProductService.java
-package com.example.optimization.service;
-
-import io.micrometer.core.annotation.Timed;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
-
-@Slf4j
+// ใช้ @Lazy explicitly สำหรับ heavy beans
 @Service
-@RequiredArgsConstructor
-public class ProductService {
-
-    private final ProductRepository productRepository;
-    private final MeterRegistry meterRegistry;
-
-    @Timed(value = "product.lookup", description = "Time to lookup product")
-    @Cacheable(value = "products", key = "#id")
-    public Product getProduct(Long id) {
-        meterRegistry.counter("product.cache.miss", "operation", "getById").increment();
-        return productRepository.findById(id)
-            .orElseThrow(() -> new ProductNotFoundException(id));
+@Lazy // จะถูกสร้างเมื่อมีการใช้งานครั้งแรก
+public class ReportGenerationService {
+    
+    // Heavy initialization - PDF libraries, etc.
+    private final PdfRenderer pdfRenderer;
+    private final ExcelRenderer excelRenderer;
+    
+    public ReportGenerationService() {
+        this.pdfRenderer = new PdfRenderer(); // slow initialization
+        this.excelRenderer = new ExcelRenderer();
     }
+}
 
-    @Timed(value = "product.search", description = "Time to search products")
-    public List<ProductSummary> searchProducts(SearchCriteria criteria) {
-        return productRepository.findProductSummaries();
-    }
-
-    // Batch loading ลด N+1 problem
-    @Timed(value = "product.batch.load")
-    public List<Product> getProductsBatch(List<Long> ids) {
-        return productRepository.findAllById(ids);
-    }
+// @Lazy injection
+@Service
+public class OrderService {
+    
+    @Lazy // Inject lazily - ReportGenerationService ไม่ถูกสร้างจนกว่าจะเรียกใช้
+    private final ReportGenerationService reportService;
+    
+    // ...
 }
 ```
 
----
-
-## ขั้นตอนที่ 3210: Production-Ready Configuration
-
-การ configure Spring Boot สำหรับ production environment
+### Spring Boot 3.x Startup Actuator
 
 ```yaml
-# application-production.yml
-spring:
-  # JPA/Hibernate ใน production
-  jpa:
-    hibernate:
-      ddl-auto: validate     # ตรวจสอบ schema แต่ไม่แก้ไข
-    show-sql: false           # ปิด SQL logging
-    open-in-view: false       # ปิด OSIV (ลด connection holding)
-    properties:
-      hibernate:
-        # Query optimization
-        jdbc.batch_size: 50
-        order_inserts: true
-        order_updates: true
-        batch_versioned_data: true
-        
-        # Cache (L2 cache)
-        cache.use_second_level_cache: true
-        cache.use_query_cache: true
-        cache.region.factory_class: org.hibernate.cache.jcache.JCacheRegionFactory
-        javax.cache.provider: org.ehcache.jsr107.EhcacheCachingProvider
-        
-        # Statistics
-        generate_statistics: false  # ปิดใน production เพื่อ performance
-        
-        # Fetch size
-        jdbc.fetch_size: 50
-
-  # Redis cache ใน production
-  redis:
-    host: ${REDIS_HOST:localhost}
-    port: ${REDIS_PORT:6379}
-    password: ${REDIS_PASSWORD}
-    timeout: 2000
-    lettuce:
-      pool:
-        max-active: 20
-        max-idle: 10
-        min-idle: 5
-        max-wait: 1000
-
-  # Jackson
-  jackson:
-    default-property-inclusion: non_null
-    serialization:
-      write-dates-as-timestamps: false
-      fail-on-empty-beans: false
-    deserialization:
-      fail-on-unknown-properties: false
-
-# Management
+# เปิด startup endpoint เพื่อวิเคราะห์ startup time
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,threaddump,heapdump,loggers
-      base-path: /actuator
+        include: startup,health,metrics,info
   endpoint:
-    health:
-      show-details: when-authorized
-      show-components: when-authorized
-      probes:
-        enabled: true  # Kubernetes liveness/readiness probes
-  health:
-    circuitbreakers:
+    startup:
       enabled: true
-    ratelimiters:
-      enabled: true
-  metrics:
-    distribution:
-      percentiles-histogram:
-        http.server.requests: true
-      percentiles:
-        http.server.requests: 0.5,0.75,0.95,0.99
-      sla:
-        http.server.requests: 100ms,200ms,500ms,1s
-    export:
-      prometheus:
-        enabled: true
-  tracing:
-    sampling:
-      probability: 0.1   # Sample 10% ของ requests
-
-# Logging
-logging:
-  level:
-    root: WARN
-    com.example: INFO
-    org.springframework: WARN
-    org.hibernate: WARN
-    com.zaxxer.hikari: INFO
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{traceId}] - %msg%n"
-  file:
-    name: /var/log/app/application.log
-    max-size: 100MB
-    max-history: 30
-    total-size-cap: 1GB
-```
-
----
-
-## ขั้นตอนที่ 3211: Graceful Shutdown
-
-การ shutdown application อย่างปลอดภัย
-
-```java
-// config/GracefulShutdownConfig.java
-package com.example.optimization.config;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
-import org.springframework.boot.web.server.WebServerFactoryCustomizer;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-import java.time.Duration;
-
-@Slf4j
-@Configuration
-public class GracefulShutdownConfig {
-
-    @Bean
-    public WebServerFactoryCustomizer<TomcatServletWebServerFactory> gracefulShutdown() {
-        return factory -> factory.addContextCustomizers(context -> {
-            log.info("Configuring graceful shutdown...");
-        });
-    }
-}
-```
-
-```yaml
-# application.yml - Graceful Shutdown
-server:
-  shutdown: graceful        # รอให้ requests ปัจจุบันเสร็จก่อน shutdown
-
-spring:
-  lifecycle:
-    timeout-per-shutdown-phase: 30s   # รอสูงสุด 30 วินาที
 ```
 
 ```java
-// lifecycle/ApplicationShutdownHandler.java
-package com.example.optimization.lifecycle;
-
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationListener;
-import org.springframework.context.event.ContextClosedEvent;
-import org.springframework.stereotype.Component;
-
-@Slf4j
+// monitoring/StartupMetricsListener.java
 @Component
-@RequiredArgsConstructor
-public class ApplicationShutdownHandler
-        implements ApplicationListener<ContextClosedEvent> {
-
-    private final CacheManager cacheManager;
-    private final MetricsPublisher metricsPublisher;
-
+public class StartupMetricsListener implements ApplicationListener<ApplicationStartedEvent> {
+    
+    private final MeterRegistry meterRegistry;
+    
     @Override
-    public void onApplicationEvent(ContextClosedEvent event) {
-        log.info("Application shutting down...");
+    public void onApplicationEvent(ApplicationStartedEvent event) {
+        Duration startupTime = event.getTimeTaken();
         
-        try {
-            // บันทึก metrics สุดท้าย
-            metricsPublisher.publishFinalMetrics();
-            log.info("Final metrics published");
-        } catch (Exception e) {
-            log.error("Error publishing final metrics", e);
-        }
+        meterRegistry.gauge("app.startup.time.seconds", 
+            startupTime.toSeconds());
         
-        try {
-            // Clear caches
-            cacheManager.getCacheNames()
-                .forEach(name -> {
-                    var cache = cacheManager.getCache(name);
-                    if (cache != null) {
-                        cache.clear();
-                    }
-                });
-            log.info("Caches cleared");
-        } catch (Exception e) {
-            log.error("Error clearing caches", e);
-        }
-        
-        log.info("Shutdown complete");
+        log.info("Application เริ่มต้นใน {} วินาที", startupTime.toSeconds());
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3212: Performance Testing
+## ขั้นตอนที่ 3208: AOT Compilation Hints สำหรับ GraalVM Native Image
 
-การทดสอบ performance ของ application
+AOT (Ahead-of-Time) compilation ใน Spring Boot 3.x ช่วยสร้าง native binary ที่ startup เร็วมาก
+
+### เพิ่ม AOT Hints
 
 ```java
-// test/PerformanceTest.java
-package com.example.optimization;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.http.ResponseEntity;
-
-import java.time.Duration;
-import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.assertj.core.api.Assertions.assertThat;
-
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class PerformanceTest {
-
-    @LocalServerPort
-    private int port;
-
-    @Autowired
-    private TestRestTemplate restTemplate;
-
-    @Test
-    void productLookup_shouldRespondFastEnough() throws InterruptedException {
-        // Warmup
-        for (int i = 0; i < 10; i++) {
-            restTemplate.getForEntity("/api/products/1", String.class);
-        }
-
-        // Measure
-        List<Long> responseTimes = new ArrayList<>();
-        for (int i = 0; i < 100; i++) {
-            Instant start = Instant.now();
-            restTemplate.getForEntity("/api/products/1", String.class);
-            responseTimes.add(Duration.between(start, Instant.now()).toMillis());
-        }
-
-        double avgMs = responseTimes.stream()
-            .mapToLong(Long::longValue).average().orElse(0);
+// hints/ShophubRuntimeHints.java
+@Component
+@ImportRuntimeHints(ShophubRuntimeHints.class)
+public class ShophubRuntimeHints implements RuntimeHintsRegistrar {
+    
+    @Override
+    public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+        // Register reflection hints สำหรับ domain classes
+        hints.reflection().registerType(
+            Order.class,
+            MemberMode.INVOKE_PUBLIC_CONSTRUCTORS,
+            MemberMode.INVOKE_PUBLIC_METHODS
+        );
         
-        long p95Ms = responseTimes.stream()
-            .sorted()
-            .skip((long)(responseTimes.size() * 0.95))
-            .findFirst()
-            .orElse(0L);
-
-        assertThat(avgMs).isLessThan(100); // avg < 100ms
-        assertThat(p95Ms).isLessThan(200); // p95 < 200ms
+        hints.reflection().registerType(
+            Product.class,
+            MemberMode.INVOKE_PUBLIC_CONSTRUCTORS,
+            MemberMode.INVOKE_PUBLIC_METHODS
+        );
+        
+        // Register resource hints สำหรับ static resources
+        hints.resources().registerPattern("templates/*.html");
+        hints.resources().registerPattern("i18n/*.properties");
+        hints.resources().registerPattern("data/*.json");
+        
+        // Register serialization hints
+        hints.serialization().registerType(OrderEvent.class);
+        hints.serialization().registerType(ProductDto.class);
+        
+        // Register proxy hints สำหรับ Spring proxies
+        hints.proxies().registerJdkProxy(ProductService.class);
     }
+}
+```
 
-    @Test
-    void concurrentRequests_shouldHandleLoad() throws InterruptedException {
-        int threads = 50;
-        int requestsPerThread = 20;
-        
-        ExecutorService executor = Executors.newFixedThreadPool(threads);
-        CountDownLatch latch = new CountDownLatch(threads);
-        AtomicInteger successCount = new AtomicInteger(0);
-        AtomicInteger errorCount = new AtomicInteger(0);
+### Build Native Image
 
-        for (int i = 0; i < threads; i++) {
-            executor.submit(() -> {
-                for (int j = 0; j < requestsPerThread; j++) {
-                    try {
-                        ResponseEntity<String> response = restTemplate
-                            .getForEntity("/api/products", String.class);
-                        if (response.getStatusCode().is2xxSuccessful()) {
-                            successCount.incrementAndGet();
-                        } else {
-                            errorCount.incrementAndGet();
-                        }
-                    } catch (Exception e) {
-                        errorCount.incrementAndGet();
-                    }
-                }
-                latch.countDown();
-            });
-        }
+```xml
+<!-- pom.xml -->
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <configuration>
+                <imageName>shophub-api</imageName>
+                <buildArgs>
+                    <buildArg>--no-fallback</buildArg>
+                    <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                    <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                </buildArgs>
+            </configuration>
+        </plugin>
+    </plugins>
+</build>
+```
 
-        latch.await(60, TimeUnit.SECONDS);
-        executor.shutdown();
+```bash
+# Build native image
+./mvnw -Pnative native:compile
 
-        int total = threads * requestsPerThread;
-        double successRate = (double) successCount.get() / total * 100;
-        
-        assertThat(successRate).isGreaterThan(99.0); // > 99% success rate
+# Run native binary (startup ~100ms แทนที่จะเป็น 5-10s)
+./target/shophub-api
+
+# ตรวจสอบ startup time
+time ./target/shophub-api --server.port=8080
+```
+
+### Conditional AOT Optimization
+
+```java
+// config/NativeImageConfig.java
+@Configuration
+@ConditionalOnNativeImage // เฉพาะตอน run เป็น native
+public class NativeImageConfig {
+    
+    @Bean
+    public ObjectMapper objectMapper() {
+        // Configuration พิเศษสำหรับ native image
+        return JsonMapper.builder()
+            .addModule(new JavaTimeModule())
+            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            // Avoid reflection-based type detection ใน native
+            .configure(MapperFeature.USE_ANNOTATIONS, true)
+            .build();
     }
 }
 ```
 
 ---
 
-## ขั้นตอนที่ 3213: Kubernetes Deployment Optimization
+## ขั้นตอนที่ 3209: Response Compression และ Optimization
 
-```yaml
-# k8s/deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: spring-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: spring-app
-  template:
-    metadata:
-      labels:
-        app: spring-app
-    spec:
-      containers:
-        - name: spring-app
-          image: myapp:latest
-          
-          # Resource limits สำคัญมาก
-          resources:
-            requests:
-              memory: "512Mi"
-              cpu: "250m"
-            limits:
-              memory: "2Gi"
-              cpu: "2"
-          
-          # JVM options ที่ optimize สำหรับ container
-          env:
-            - name: JAVA_OPTS
-              value: >-
-                -XX:+UseContainerSupport
-                -XX:MaxRAMPercentage=75.0
-                -XX:InitialRAMPercentage=50.0
-                -XX:+UseG1GC
-                -XX:MaxGCPauseMillis=200
-                -XX:+ExitOnOutOfMemoryError
-            - name: SPRING_PROFILES_ACTIVE
-              value: production
-          
-          # Health probes
-          readinessProbe:
-            httpGet:
-              path: /actuator/health/readiness
-              port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            failureThreshold: 3
-          
-          livenessProbe:
-            httpGet:
-              path: /actuator/health/liveness
-              port: 8080
-            initialDelaySeconds: 60
-            periodSeconds: 30
-            failureThreshold: 5
-          
-          # Graceful shutdown
-          lifecycle:
-            preStop:
-              exec:
-                command: ["/bin/sh", "-c", "sleep 10"]
-          terminationGracePeriodSeconds: 60
+```java
+// config/WebMvcConfig.java
+@Configuration
+public class WebMvcConfig implements WebMvcConfigurer {
+    
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        registry.addResourceHandler("/static/**")
+            .addResourceLocations("classpath:/static/")
+            .setCacheControl(CacheControl.maxAge(Duration.ofDays(365)))
+            .resourceChain(true)
+            .addResolver(new GzipResourceResolver()) // Serve pre-compressed files
+            .addResolver(new VersionResourceResolver()
+                .addContentVersionStrategy("/**")); // Content-based versioning
+    }
+    
+    @Override
+    public void configureContentNegotiation(ContentNegotiationConfigurer configurer) {
+        configurer
+            .favorParameter(false)
+            .favorPathExtension(false)
+            .ignoreAcceptHeader(false)
+            .defaultContentType(MediaType.APPLICATION_JSON);
+    }
+}
+```
 
----
-# HorizontalPodAutoscaler
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: spring-app-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: spring-app
-  minReplicas: 2
-  maxReplicas: 20
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 80
+### Response Caching Headers
+
+```java
+// controller/ProductController.java
+@GetMapping("/products/{id}")
+public ResponseEntity<ProductDto> getProduct(@PathVariable String id) {
+    Product product = productService.findById(id);
+    
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.maxAge(Duration.ofMinutes(5))
+            .mustRevalidate()
+            .cachePublic())
+        .eTag(String.valueOf(product.getVersion())) // ETag สำหรับ conditional requests
+        .lastModified(product.getUpdatedAt().toInstant(ZoneOffset.UTC))
+        .body(productMapper.toDto(product));
+}
+
+@GetMapping("/products")
+public ResponseEntity<List<ProductDto>> listProducts(ProductFilter filter) {
+    List<ProductDto> products = productService.findAll(filter);
+    
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.maxAge(Duration.ofMinutes(2)))
+        .body(products);
+}
 ```
 
 ---
 
-## สรุป Part 90
+## ขั้นตอนที่ 3210: Performance Profiling
 
-ในส่วนนี้เราได้เรียนรู้:
-- **JVM Tuning** - JVM flags, heap sizing, metaspace configuration
-- **GC Selection** - G1GC, ZGC, Shenandoah เลือกใช้อย่างไร
-- **Heap Sizing** - วิเคราะห์และกำหนดขนาด heap อย่างเหมาะสม
-- **Connection Pool** - HikariCP optimization สำหรับ production
-- **Thread Pool** - Task, I/O, CPU executors
-- **Cache Warming** - Warm up caches ก่อน traffic เข้ามา
-- **Lazy vs Eager Loading** - เลือกใช้ให้เหมาะกับ use case
-- **HTTP/2** - Connection multiplexing สำหรับ performance
-- **Graceful Shutdown** - Shutdown อย่างปลอดภัย
-- **Performance Testing** - วัด response time และ concurrency
-- **Kubernetes** - Deploy และ scale อย่างเหมาะสม
+```java
+// config/ProfilingConfig.java
+@Configuration
+@Profile("profiling")
+public class ProfilingConfig {
+    
+    // Async profiler integration
+    @Bean
+    public AsyncProfilerMetrics asyncProfilerMetrics(MeterRegistry meterRegistry) {
+        return new AsyncProfilerMetrics(meterRegistry);
+    }
+}
+
+// aspect/PerformanceMonitoringAspect.java
+@Aspect
+@Component
+@ConditionalOnProperty("app.performance-monitoring.enabled")
+public class PerformanceMonitoringAspect {
+    
+    private final MeterRegistry meterRegistry;
+    
+    @Around("@annotation(Monitored)")
+    public Object measurePerformance(ProceedingJoinPoint joinPoint) throws Throwable {
+        String methodName = joinPoint.getSignature().toShortString();
+        
+        Timer.Sample sample = Timer.start(meterRegistry);
+        
+        try {
+            Object result = joinPoint.proceed();
+            
+            sample.stop(Timer.builder("method.execution")
+                .tag("method", methodName)
+                .tag("status", "success")
+                .register(meterRegistry));
+            
+            return result;
+        } catch (Exception e) {
+            sample.stop(Timer.builder("method.execution")
+                .tag("method", methodName)
+                .tag("status", "error")
+                .tag("exception", e.getClass().getSimpleName())
+                .register(meterRegistry));
+            throw e;
+        }
+    }
+}
+
+// annotation/Monitored.java
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Monitored {}
+```
 
 ---
 
-## บทสรุปรวม Parts 86-90
+## ขั้นตอนที่ 3211-3240: Production Checklist และ Best Practices
 
-เราได้เรียนรู้ Spring Boot ในระดับ World-Class ครอบคลุม:
+### Performance Optimization Checklist
 
-| Part | หัวข้อ | ขั้นตอน |
-|------|--------|---------|
-| 86 | Integration Patterns | 3041-3080 |
-| 87 | Reactive Security | 3081-3120 |
-| 88 | Data Streaming | 3121-3160 |
-| 89 | Advanced Patterns | 3161-3200 |
-| 90 | Production Optimization | 3201-3240 |
+```
+JVM:
+  ✅ เลือก GC ที่เหมาะสม (G1GC/ZGC)
+  ✅ ใช้ MaxRAMPercentage แทน -Xmx ใน containers
+  ✅ เปิด GC logging สำหรับ monitoring
+  ✅ ตั้งค่า OOMKiller (-XX:+ExitOnOutOfMemoryError)
+
+Database:
+  ✅ HikariCP pool size ตามสูตร
+  ✅ Prepared statement cache
+  ✅ Read replica สำหรับ query-heavy workloads
+  ✅ Connection leak detection
+
+Caching:
+  ✅ Layered cache (L1: Caffeine, L2: Redis)
+  ✅ Cache warming on startup
+  ✅ Appropriate TTL per cache
+  ✅ Cache metrics monitoring
+
+HTTP:
+  ✅ HTTP/2 enabled
+  ✅ Response compression (gzip/brotli)
+  ✅ Cache-Control headers
+  ✅ ETag support
+
+Startup:
+  ✅ Lazy initialization
+  ✅ AOT hints สำหรับ reflection
+  ✅ Startup time monitoring
+```
+
+### Load Testing ก่อน Production
+
+```bash
+# ใช้ k6 สำหรับ load testing
+# k6/load-test.js
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+    stages: [
+        { duration: '2m', target: 100 },   // Ramp up
+        { duration: '5m', target: 100 },   // Sustained
+        { duration: '2m', target: 200 },   // Peak
+        { duration: '5m', target: 200 },   // Sustained peak
+        { duration: '2m', target: 0 },     // Ramp down
+    ],
+    thresholds: {
+        http_req_duration: ['p(95)<500'],   // 95% requests < 500ms
+        http_req_failed: ['rate<0.01'],     // Error rate < 1%
+    },
+};
+
+export default function() {
+    const response = http.get('http://localhost:8080/api/v1/products');
+    check(response, {
+        'status 200': (r) => r.status === 200,
+        'response time < 500ms': (r) => r.timings.duration < 500,
+    });
+    sleep(1);
+}
+```
 
 ---
 
-*[← Part 89: Advanced Patterns](./part-89-advanced-patterns.md) | [Part 91: Cloud Native →](./part-91-cloud-native.md)*
+## สรุป
+
+Part 90 ครอบคลุม Production Optimization ที่สำคัญ:
+
+1. **JVM Tuning** - G1GC สำหรับ balanced, ZGC สำหรับ ultra-low latency
+2. **Heap Sizing** - MaxRAMPercentage สำหรับ containers
+3. **HikariCP** - pool sizing ตามสูตรและ workload
+4. **Thread Pools** - multiple pools ตาม task type + Virtual Threads
+5. **Cache Warming** - ป้องกัน cold start
+6. **HTTP/2** - multiplexing และ server push
+7. **Lazy Init** - ลด startup time
+8. **AOT Hints** - เตรียมสำหรับ native image
+
+การ optimize ที่ดีต้องมาพร้อมกับ **monitoring** และ **load testing** เสมอ อย่า guess - ใช้ data จาก profiling
+
+---
+
+*[← Part 89: Advanced Patterns](./part-89-advanced-patterns.md) | [Part 91: Microservices Project →](./part-91-microservices-project.md)*
